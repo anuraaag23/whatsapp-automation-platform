@@ -1,0 +1,766 @@
+// ---------------------------------------------------------------------------
+// Prisma schema — WhatsApp Business Automation Platform
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Only matters for Supabase (or any pooled/pgbouncer connection) — Prisma
+  // migrations use prepared statements, which pgbouncer's transaction-mode
+  // pooling doesn't support. DIRECT_DATABASE_URL should point at Supabase's
+  // direct (non-pooled) connection string for `prisma migrate`, while
+  // DATABASE_URL stays on the pooled connection for normal app queries. For
+  // local Docker Postgres (no pooler involved at all), just set both env
+  // vars to the same value — see docker-compose.yml.
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Organizations & Users
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logoUrl   String?
+  timezone  String   @default("UTC")
+  language  String   @default("en")
+  theme     Theme    @default(AUTO)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users              User[]
+  members            OrganizationMember[]
+  invites            OrganizationInvite[]
+  contacts           Contact[]
+  tags               Tag[]
+  segments           Segment[]
+  templates          MessageTemplate[]
+  campaigns          Campaign[]
+  schedules          Schedule[]
+  messages           Message[]
+  automations        Automation[]
+  notifications      Notification[]
+  apiKeys            ApiKey[]
+  auditLogs          AuditLog[]
+  whatsappAccount    WhatsappAccount?
+  notificationSettings NotificationSettings?
+  groups             ContactGroup[]
+
+  @@map("organizations")
+}
+
+enum Theme {
+  LIGHT
+  DARK
+  AUTO
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+  SUPPORT
+  VIEWER
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  avatarUrl      String?
+  role           Role     @default(VIEWER)
+  isActive       Boolean  @default(true)
+  emailVerified  Boolean  @default(false)
+  emailVerifiedAt DateTime?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  refreshTokens  RefreshToken[]
+  auditLogs      AuditLog[]
+  campaigns      Campaign[]      @relation("CampaignCreatedBy")
+  schedules      Schedule[]      @relation("ScheduleCreatedBy")
+  automations    Automation[]    @relation("AutomationCreatedBy")
+  memberships    OrganizationMember[]
+  passwordResetTokens    PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+/// Single-use, short-lived tokens for the "forgot password" flow. We store
+/// a hash of the token (never the raw value) so a leaked database dump
+/// can't be used to reset accounts, same pattern as RefreshToken.
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/// Single-use tokens for confirming a user owns the email they signed up
+/// with. Not required to log in (we don't want to lock people out of a
+/// product they're actively trying), but gates anything that assumes a
+/// reachable email address, and is surfaced as a banner until confirmed.
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+/// A user's membership (and role) in a given organization. A user's
+/// `organizationId` above is their default/home org (created at signup);
+/// this table is what actually governs multi-org access and per-org role,
+/// and is what the JWT/RBAC layer checks on every request.
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           Role     @default(VIEWER)
+  isActive       Boolean  @default(true)
+  joinedAt       DateTime @default(now())
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("organization_members")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdByIp String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model ApiKey {
+  id             String   @id @default(cuid())
+  name           String
+  keyHash        String   @unique
+  lastUsedAt     DateTime?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp Business Account connection (official Cloud API)
+// ---------------------------------------------------------------------------
+
+model WhatsappAccount {
+  id                    String   @id @default(cuid())
+  organizationId        String   @unique
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessAccountId     String
+  phoneNumberId         String
+  displayPhoneNumber    String
+  accessTokenCiphertext String
+  webhookVerifyToken    String
+  apiVersion            String   @default("v20.0")
+  status                String   @default("connected")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("whatsapp_accounts")
+}
+
+// ---------------------------------------------------------------------------
+// Contacts
+// ---------------------------------------------------------------------------
+
+model Contact {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  phoneNumber    String
+  firstName      String?
+  lastName       String?
+  email          String?
+  company        String?
+  city           String?
+  customFields   Json     @default("{}")
+  notes          String?
+
+  optInStatus    OptInStatus @default(PENDING)
+  optInAt        DateTime?
+  optOutAt       DateTime?
+
+  isFavorite     Boolean  @default(false)
+  isArchived     Boolean  @default(false)
+
+  tags           ContactTag[]
+  segments       ContactSegment[]
+  groups         ContactGroupMember[]
+  messages       Message[]
+  campaignRecipients CampaignRecipient[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([organizationId, phoneNumber])
+  @@index([organizationId])
+  @@map("contacts")
+}
+
+enum OptInStatus {
+  PENDING
+  OPTED_IN
+  OPTED_OUT
+}
+
+model Tag {
+  id             String   @id @default(cuid())
+  name           String
+  color          String   @default("#0A84FF")
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contacts       ContactTag[]
+  createdAt      DateTime @default(now())
+
+  @@unique([organizationId, name])
+  @@map("tags")
+}
+
+model ContactTag {
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tagId     String
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, tagId])
+  @@map("contact_tags")
+}
+
+model Segment {
+  id             String   @id @default(cuid())
+  name           String
+  description    String?
+  rules          Json     @default("{}")
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contacts       ContactSegment[]
+  createdAt      DateTime @default(now())
+
+  @@map("segments")
+}
+
+model ContactSegment {
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  segmentId String
+  segment   Segment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, segmentId])
+  @@map("contact_segments")
+}
+
+model ContactGroup {
+  id             String   @id @default(cuid())
+  name           String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members        ContactGroupMember[]
+  createdAt      DateTime @default(now())
+
+  @@map("contact_groups")
+}
+
+model ContactGroupMember {
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  groupId   String
+  group     ContactGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, groupId])
+  @@map("contact_group_members")
+}
+
+// ---------------------------------------------------------------------------
+// Message templates (WhatsApp-approved + internal drafts)
+// ---------------------------------------------------------------------------
+
+model MessageTemplate {
+  id               String   @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name             String
+  category         TemplateCategory @default(UTILITY)
+  language         String   @default("en_US")
+  bodyText         String
+  headerType       HeaderType @default(NONE)
+  headerContent    String?
+  footerText       String?
+  buttons          Json     @default("[]")
+  variables        Json     @default("[]")
+
+  waTemplateId     String?
+  waStatus         WaTemplateStatus @default(DRAFT)
+  waRejectionReason String?
+  statusHistory    TemplateStatusHistory[]
+
+  schedules        Schedule[]
+  campaigns        Campaign[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([organizationId, name, language])
+  @@index([organizationId])
+  @@map("message_templates")
+}
+
+model TemplateStatusHistory {
+  id         String   @id @default(cuid())
+  templateId String
+  template   MessageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  status     WaTemplateStatus
+  note       String?
+  changedAt  DateTime @default(now())
+
+  @@index([templateId, changedAt])
+  @@map("template_status_history")
+}
+
+enum TemplateCategory {
+  MARKETING
+  UTILITY
+  AUTHENTICATION
+}
+
+enum HeaderType {
+  NONE
+  TEXT
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
+enum WaTemplateStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  PAUSED
+}
+
+// ---------------------------------------------------------------------------
+// Messages (individual send/receive log)
+// ---------------------------------------------------------------------------
+
+model Message {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contactId      String
+  contact        Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  direction      MessageDirection
+  type           MessageType
+  content        Json
+  status         MessageStatus @default(QUEUED)
+  waMessageId    String?
+  errorCode      String?
+  errorMessage   String?
+  retryCount     Int      @default(0)
+
+  campaignId     String?
+  campaign       Campaign? @relation(fields: [campaignId], references: [id])
+  scheduleId     String?
+  schedule       Schedule? @relation(fields: [scheduleId], references: [id])
+
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  failedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@index([contactId])
+  @@index([campaignId])
+  @@map("messages")
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LOCATION
+  CONTACT_CARD
+  INTERACTIVE_BUTTONS
+  INTERACTIVE_LIST
+  TEMPLATE
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Schedules (recurring / random-time / random-message sender)
+// ---------------------------------------------------------------------------
+
+model Schedule {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdById    String
+  createdBy      User     @relation("ScheduleCreatedBy", fields: [createdById], references: [id])
+
+  name           String
+  status         ScheduleStatus @default(ACTIVE)
+
+  recurrenceType RecurrenceType
+  cronExpression String?
+  intervalHours  Int?
+  intervalDays   Int?
+  daysOfWeek     Int[]    @default([])
+  timeOfDay      String?
+  timezone       String   @default("UTC")
+
+  randomTimeEnabled Boolean @default(false)
+  randomWindowStart String?
+  randomWindowEnd   String?
+  randomMinGapMinutes Int?
+  randomMaxGapMinutes Int?
+  avoidSameTimeAsLast Boolean @default(true)
+
+  messagePool    Json     @default("[]")
+  templateId     String?
+  template       MessageTemplate? @relation(fields: [templateId], references: [id])
+
+  audienceType   AudienceType @default(SEGMENT)
+  audienceRef    Json     @default("{}")
+
+  startDate      DateTime?
+  expiryDate     DateTime?
+  nextRunAt      DateTime?
+  lastRunAt      DateTime?
+
+  messages       Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@map("schedules")
+}
+
+enum ScheduleStatus {
+  ACTIVE
+  PAUSED
+  DISABLED
+  EXPIRED
+}
+
+enum RecurrenceType {
+  ONE_TIME
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+  EVERY_X_HOURS
+  EVERY_X_DAYS
+  BUSINESS_DAYS
+  WEEKENDS
+  SPECIFIC_DATES
+  CUSTOM_CRON
+}
+
+enum AudienceType {
+  ALL_CONTACTS
+  SEGMENT
+  GROUP
+  TAG
+  CUSTOM_LIST
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns
+// ---------------------------------------------------------------------------
+
+model Campaign {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdById    String
+  createdBy      User     @relation("CampaignCreatedBy", fields: [createdById], references: [id])
+
+  name           String
+  type           CampaignType @default(CUSTOM)
+  status         CampaignStatus @default(DRAFT)
+
+  templateId     String?
+  template       MessageTemplate? @relation(fields: [templateId], references: [id])
+
+  audienceType   AudienceType @default(SEGMENT)
+  audienceRef    Json     @default("{}")
+
+  scheduledAt    DateTime?
+  launchedAt     DateTime?
+  completedAt    DateTime?
+
+  stats          Json     @default("{\"sent\":0,\"delivered\":0,\"read\":0,\"failed\":0}")
+
+  recipients     CampaignRecipient[]
+  messages       Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@map("campaigns")
+}
+
+enum CampaignType {
+  WELCOME
+  REMINDER
+  PROMOTION
+  NEWSLETTER
+  FESTIVAL_GREETING
+  FOLLOW_UP
+  CUSTOM
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+model CampaignRecipient {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId  String
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status     MessageStatus @default(QUEUED)
+  createdAt  DateTime @default(now())
+
+  @@unique([campaignId, contactId])
+  @@map("campaign_recipients")
+}
+
+// ---------------------------------------------------------------------------
+// Visual automation builder
+// ---------------------------------------------------------------------------
+
+model Automation {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdById    String
+  createdBy      User     @relation("AutomationCreatedBy", fields: [createdById], references: [id])
+
+  name           String
+  description    String?
+  status         AutomationStatus @default(DRAFT)
+  graph          Json     // nodes + edges for the drag & drop canvas
+  triggerType    AutomationTriggerType
+
+  runsCount      Int      @default(0)
+  lastRunAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@map("automations")
+}
+
+enum AutomationStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+}
+
+enum AutomationTriggerType {
+  KEYWORD_RECEIVED
+  CONTACT_CREATED
+  TAG_ADDED
+  CAMPAIGN_COMPLETED
+  WEBHOOK
+  SCHEDULE
+  MANUAL
+}
+
+// ---------------------------------------------------------------------------
+// Notification channel delivery settings
+// ---------------------------------------------------------------------------
+
+model NotificationSettings {
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  emailEnabled       Boolean @default(false)
+  smtpHost           String?
+  smtpPort           Int?
+  smtpUser           String?
+  smtpPasswordCiphertext String?
+  smtpFromAddress    String?
+  notifyEmailTo      String?
+
+  slackEnabled       Boolean @default(false)
+  slackWebhookUrl    String?
+
+  telegramEnabled    Boolean @default(false)
+  telegramBotTokenCiphertext String?
+  telegramChatId     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Automation run history
+// ---------------------------------------------------------------------------
+
+model OrganizationInvite {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           Role
+  token          String   @unique
+  invitedByUserId String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("organization_invites")
+}
+
+model AutomationRun {
+  id             String   @id @default(cuid())
+  automationId   String
+  organizationId String
+  contactId      String
+
+  status         AutomationRunStatus @default(RUNNING)
+  steps          Json     @default("[]")
+  errorMessage   String?
+
+  startedAt DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([automationId, startedAt])
+  @@map("automation_runs")
+}
+
+enum AutomationRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  channel        NotificationChannel
+  title          String
+  body           String
+  isRead         Boolean  @default(false)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId, userId])
+  @@map("notifications")
+}
+
+enum NotificationChannel {
+  DESKTOP
+  EMAIL
+  IN_APP
+  WEBHOOK
+  SLACK
+  TELEGRAM
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id])
+
+  action         String
+  entityType     String
+  entityId       String?
+  device         String?
+  ipAddress      String?
+  status         String   @default("success")
+  metadata       Json     @default("{}")
+
+  createdAt DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@map("audit_logs")
+}

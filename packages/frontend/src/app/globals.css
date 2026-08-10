@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply text-deep-navy dark:text-white;
+  background: #eef1f6;
+  overflow-x: hidden;
+}
+
+.dark body {
+  background: #05060c;
+}
+
+/* Ambient mesh background — Liquid Glass needs something with texture and
+   color behind it to bend, otherwise the refraction has nothing to show. */
+.app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+}
+
+.app-backdrop::before,
+.app-backdrop::after {
+  content: '';
+  position: absolute;
+  width: 60vw;
+  height: 60vw;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.55;
+  animation: float 22s ease-in-out infinite;
+  /* Promote to its own GPU layer so the blur+transform composite cheaply
+     instead of forcing a full repaint of everything sampling it (every
+     backdrop-filter glass panel on screen) on each animation tick. */
+  will-change: transform;
+  transform: translateZ(0);
+}
+
+.app-backdrop::before {
+  top: -10%;
+  left: -10%;
+  background: radial-gradient(circle at 30% 30%, #5aa9ff, transparent 70%);
+}
+
+.app-backdrop::after {
+  bottom: -20%;
+  right: -10%;
+  background: radial-gradient(circle at 70% 70%, #30d158, transparent 70%);
+  animation-delay: -11s;
+}
+
+/* On phones/tablets, a continuously-animating 90px blur sitting behind a UI
+   full of backdrop-filter glass panels is the single biggest cause of
+   scroll jank — every background animation frame forces every glass panel
+   on screen to resample and recompute its blur. The visual difference from
+   a slow ambient drift is minimal; the frame-rate cost is not. So on
+   coarse-pointer/small-viewport devices we keep the color wash but drop the
+   blur radius hard and freeze the motion. */
+@media (max-width: 768px), (pointer: coarse) {
+  .app-backdrop::before,
+  .app-backdrop::after {
+    filter: blur(40px);
+    animation: none;
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(4%, 6%) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-backdrop::before,
+  .app-backdrop::after {
+    animation: none;
+  }
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Frosted fallback for browsers where the SVG-refraction backdrop-filter
+   silently no-ops (Safari, Firefox) — applied by liquid-glass.js itself. */
+.lg-fallback {
+  background-color: rgba(255, 255, 255, 0.55);
+}
+
+.dark .lg-fallback {
+  background-color: rgba(14, 14, 22, 0.45);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 130, 150, 0.35);
+  border-radius: 999px;
+}
+
+/* Snappier touch response everywhere: removes the ~300ms tap delay mobile
+   browsers otherwise insert to disambiguate a tap from the start of a
+   double-tap-to-zoom gesture, and drops the gray tap-highlight flash. */
+button,
+a,
+[role='button'],
+input,
+select,
+textarea {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevents the little rubber-band overscroll glow/bounce from fighting
+   with the app's own fixed background and glass panels while scrolling
+   on mobile Safari/Chrome. */
+html,
+body {
+  overscroll-behavior-y: none;
+}

@@ -1,0 +1,119 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-waplatform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-waplatform}
+      POSTGRES_DB: ${POSTGRES_DB:-waplatform}
+    # Bound to localhost only — reachable from other containers via the
+    # "postgres" service name, but not from the public internet. If you
+    # need host access for a GUI client, SSH-tunnel in instead of opening
+    # this to 0.0.0.0.
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-waplatform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-waplatform}:${POSTGRES_PASSWORD:-waplatform}@postgres:5432/${POSTGRES_DB:-waplatform}?schema=public
+      # Same value as DATABASE_URL for local Docker Postgres — there's no
+      # connection pooler in play here, this only differs on Supabase.
+      DIRECT_DATABASE_URL: postgresql://${POSTGRES_USER:-waplatform}:${POSTGRES_PASSWORD:-waplatform}@postgres:5432/${POSTGRES_DB:-waplatform}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    # No public port here on purpose — Caddy reaches this container over the
+    # internal Compose network (service name "backend"). Only Caddy publishes
+    # ports to the host. For local dev without Caddy, temporarily add back
+    # "3001:3001" or run: docker compose exec backend sh.
+    # No public port here on purpose — Caddy reaches this container over the
+    # internal Compose network (service name "backend"). Only Caddy publishes
+    # ports to the host. For local dev without Caddy, temporarily add back
+    # "3001:3001" or run: docker compose exec backend sh.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # NOTE: no bind mount here on purpose. This is a production multi-stage
+    # build (Dockerfile ends with `node dist/main.js`) — mounting the host
+    # source folder over /app at runtime would wipe out the compiled dist/
+    # folder that was just built inside the image.
+
+  frontend:
+    build:
+      context: ./packages/frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Explicitly overrides the backend's PORT=3001 from the shared .env
+      # file — without this, Next.js inherits PORT=3001 too and binds to
+      # the wrong port even though Docker maps host 3000 -> container 3000.
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+    # No public port here either — see backend comment above.
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Same reasoning as backend: no bind mount, this runs the built .next
+    # output from the image.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

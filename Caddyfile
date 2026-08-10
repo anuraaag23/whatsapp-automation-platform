@@ -1,0 +1,25 @@
+{$DOMAIN} {
+	# WhatsApp webhook + all API routes go to the backend
+	handle /api/* {
+		reverse_proxy backend:3001
+	}
+
+	# Everything else goes to the Next.js frontend
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	encode gzip
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Caddy auto-provisions and renews a Let's Encrypt cert for {$DOMAIN} the
+# first time it starts, as long as:
+#   1. DOMAIN in .env resolves (via DNS) to this server's public IP
+#   2. Ports 80 and 443 are reachable from the public internet (see the
+#      firewall notes in DEPLOYMENT.md — Oracle Cloud needs BOTH the OS
+#      firewall and the cloud Security List opened, not just one)
