@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files — these contain real passwords/secrets and must NEVER
+# be committed. Render/Vercel get their env vars typed into their own
+# dashboards instead, not from a file in the repo.
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+
+# Build output
+dist/
+.next/
+out/
+build/
+
+# Prisma
+**/node_modules/.prisma
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Docker volumes data (if ever created locally outside Docker's own volume mgmt)
+postgres_data/
+redis_data/

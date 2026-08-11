@@ -1,7 +1,8 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { MessageCircle, Mail, ArrowLeft } from 'lucide-react';
+import { Mail, ArrowLeft } from 'lucide-react';
+import Image from 'next/image';
 import { GlassPanel, GlassButton } from '@/components/glass';
 import { apiClient } from '@/lib/api-client';
 
@@ -32,8 +33,8 @@ export default function ForgotPasswordPage() {
     <main className="flex min-h-screen items-center justify-center px-4">
       <GlassPanel className="w-full max-w-md" animate>
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-electric shadow-[0_8px_24px_rgba(10,132,255,0.4)]">
-            <MessageCircle className="text-white" size={26} />
+          <div className="mb-4 h-14 w-14 overflow-hidden rounded-2xl shadow-[0_8px_24px_rgba(10,132,255,0.4)]">
+            <Image src="/logo.png" alt="WA Platform" width={56} height={56} className="h-full w-full object-cover" priority />
           </div>
           <h1 className="text-xl font-semibold text-deep-navy dark:text-white">
             Reset your password

@@ -2,7 +2,8 @@
 
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { MessageCircle, Lock, Mail } from 'lucide-react';
+import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
+import Image from 'next/image';
 import { GlassPanel, GlassButton } from '@/components/glass';
 import { apiClient } from '@/lib/api-client';
 import { useAuthStore } from '@/store/auth-store';
@@ -14,6 +15,7 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,8 +43,8 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center px-4">
       <GlassPanel className="w-full max-w-md" animate>
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-electric shadow-[0_8px_24px_rgba(10,132,255,0.4)]">
-            <MessageCircle className="text-white" size={26} />
+          <div className="mb-4 h-14 w-14 overflow-hidden rounded-2xl shadow-[0_8px_24px_rgba(10,132,255,0.4)]">
+            <Image src="/logo.png" alt="WA Platform" width={56} height={56} className="h-full w-full object-cover" priority />
           </div>
           <h1 className="text-xl font-semibold text-deep-navy dark:text-white">
             Welcome back
@@ -82,13 +84,21 @@ export default function LoginPage() {
             <div className="flex items-center gap-2 rounded-xl border border-white/40 bg-white/50 px-3 py-2.5 dark:border-white/10 dark:bg-white/10">
               <Lock size={16} className="text-deep-navy/40 dark:text-white/40" />
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full bg-transparent text-sm outline-none placeholder:text-deep-navy/30 dark:placeholder:text-white/30"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                className="shrink-0 text-deep-navy/40 hover:text-deep-navy/70 dark:text-white/40 dark:hover:text-white/70"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
           </label>
 

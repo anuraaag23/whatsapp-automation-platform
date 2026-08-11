@@ -2,7 +2,8 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { MessageCircle, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import Image from 'next/image';
 import { GlassPanel, GlassButton } from '@/components/glass';
 import { apiClient } from '@/lib/api-client';
 
@@ -35,8 +36,8 @@ function VerifyEmailContent() {
   return (
     <GlassPanel className="w-full max-w-md" animate>
       <div className="flex flex-col items-center gap-4 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-electric shadow-[0_8px_24px_rgba(10,132,255,0.4)]">
-          <MessageCircle className="text-white" size={26} />
+        <div className="h-14 w-14 overflow-hidden rounded-2xl shadow-[0_8px_24px_rgba(10,132,255,0.4)]">
+          <Image src="/logo.png" alt="WA Platform" width={56} height={56} className="h-full w-full object-cover" priority />
         </div>
 
         {status === 'verifying' && (
