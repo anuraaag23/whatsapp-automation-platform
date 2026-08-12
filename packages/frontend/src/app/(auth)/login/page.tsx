@@ -111,9 +111,11 @@ export default function LoginPage() {
           </GlassButton>
         </form>
 
-        <p className="mt-6 text-center text-xs text-deep-navy/50 dark:text-white/40">
-          Demo credentials (after seeding): owner@demo.com / ChangeMe123!
-        </p>
+        {process.env.NODE_ENV !== 'production' && (
+          <p className="mt-6 text-center text-xs text-deep-navy/50 dark:text-white/40">
+            Demo credentials (after seeding): owner@demo.com / ChangeMe123!
+          </p>
+        )}
         <p className="mt-2 text-center text-xs text-deep-navy/50 dark:text-white/40">
           New here?{' '}
           <a href="/register" className="text-electric hover:underline">
