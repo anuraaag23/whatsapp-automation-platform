@@ -25,6 +25,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { GlassSidebar, GlassNavbar, type SidebarItem } from '@/components/glass';
 import { EmailVerificationBanner } from '@/components/EmailVerificationBanner';
 import { UserMenu } from '@/components/UserMenu';
+import { AuthInitializer } from '@/components/AuthInitializer';
 
 const NAV_ITEMS: SidebarItem[] = [
   { label: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard size={18} /> },
@@ -49,7 +50,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   return (
-    <div className="flex h-dvh gap-4 p-2.5 sm:p-4">
+    <AuthInitializer>
+      <div className="flex h-dvh gap-4 p-2.5 sm:p-4">
       {/* Desktop sidebar — always visible at lg+ */}
       <div className="hidden lg:flex">
         <GlassSidebar items={NAV_ITEMS} />
@@ -112,5 +114,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </div>
     </div>
+    </AuthInitializer>
   );
 }

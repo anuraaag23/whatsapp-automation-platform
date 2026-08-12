@@ -25,7 +25,7 @@ apiClient.interceptors.request.use((config) => {
 
 let refreshPromise: Promise<string | null> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+export async function refreshAccessToken(): Promise<string | null> {
   try {
     const res = await axios.post(
       `${API_BASE}/api/v1/auth/refresh`,
