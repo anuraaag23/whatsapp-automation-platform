@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import type { MessageStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { MESSAGE_TYPE } from '../common/constants/prisma-enums.constants';
+import { SendMessageDto } from './dto/send-message.dto';
 
 interface ListParams {
   status?: MessageStatus;
@@ -12,7 +15,10 @@ interface ListParams {
 
 @Injectable()
 export class MessagesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly whatsappService: WhatsappService,
+  ) {}
 
   async list(organizationId: string, params: ListParams) {
     const page = params.page && params.page > 0 ? params.page : 1;
@@ -50,5 +56,44 @@ export class MessagesService {
       acc[row.status] = row._count._all;
       return acc;
     }, {} as Record<string, number>);
+  }
+
+  /**
+   * Sends a one-off message (text or image) to a single contact right now,
+   * outside of any campaign/schedule/automation. This is the Messages page
+   * "compose" action — previously that page was read-only (list/filter
+   * only), with no way to actually send anything from it.
+   */
+  async sendAdHoc(organizationId: string, dto: SendMessageDto) {
+    // Scope check: without this, a crafted contactId from another
+    // organization would happily get a message sent to it, since
+    // WhatsappService.sendToContact() itself only looks the contact up by
+    // raw id, not by (id, organizationId) together.
+    const contact = await this.prisma.contact.findFirst({
+      where: { id: dto.contactId, organizationId },
+    });
+    if (!contact) throw new NotFoundException('Contact not found');
+
+    if (contact.optInStatus !== 'OPTED_IN') {
+      throw new BadRequestException(
+        'This contact is not opted-in yet — mark them as opted-in on the Contacts page before messaging them.',
+      );
+    }
+
+    if (dto.type === 'IMAGE') {
+      return this.whatsappService.sendToContact({
+        organizationId,
+        contactId: dto.contactId,
+        type: MESSAGE_TYPE.IMAGE,
+        content: { link: dto.imageUrl, caption: dto.caption },
+      });
+    }
+
+    return this.whatsappService.sendToContact({
+      organizationId,
+      contactId: dto.contactId,
+      type: MESSAGE_TYPE.TEXT,
+      content: { body: dto.body },
+    });
   }
 }

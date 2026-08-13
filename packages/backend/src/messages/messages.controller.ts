@@ -1,11 +1,17 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import type { MessageStatus } from '@prisma/client';
 import { MessagesService } from './messages.service';
+import { SendMessageDto } from './dto/send-message.dto';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
 
 @Controller('messages')
 export class MessagesController {
   constructor(private readonly messagesService: MessagesService) {}
+
+  @Post()
+  send(@CurrentUser() user: AuthenticatedUser, @Body() dto: SendMessageDto) {
+    return this.messagesService.sendAdHoc(user.organizationId, dto);
+  }
 
   @Get()
   list(

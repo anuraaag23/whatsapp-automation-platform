@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 
 export interface LogMessage {
@@ -30,5 +30,24 @@ export function useMessages(status?: string) {
       });
       return data;
     },
+  });
+}
+
+export interface SendMessageInput {
+  contactId: string;
+  type: 'TEXT' | 'IMAGE';
+  body?: string;
+  imageUrl?: string;
+  caption?: string;
+}
+
+export function useSendMessage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: SendMessageInput) => {
+      const { data } = await apiClient.post('/messages', input);
+      return data;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['messages'] }),
   });
 }
