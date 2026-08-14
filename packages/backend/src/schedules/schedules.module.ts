@@ -31,7 +31,15 @@ export class SchedulesModule implements OnModuleInit {
       'tick',
       {},
       {
-        repeat: { every: 60_000 },
+        // Was every 60s. BullMQ's own internal job-waiting machinery (a
+        // continuous blocking Redis poll per worker, visible in your logs
+        // as `bzpopmin` on `bull:*:marker`) runs regardless of this
+        // interval — that's the real driver of command volume, and no
+        // interval change fixes it on a per-command-billed free tier.
+        // Widening this to 5 minutes still meaningfully cuts total
+        // command volume (5x fewer repeat-job housekeeping cycles) without
+        // making scheduled sends noticeably less prompt for real use.
+        repeat: { every: 300_000 },
         removeOnComplete: true,
         removeOnFail: 50,
       },

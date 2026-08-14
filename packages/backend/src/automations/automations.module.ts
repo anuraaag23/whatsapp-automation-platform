@@ -33,12 +33,12 @@ import { ContactsModule } from '../contacts/contacts.module';
 export class AutomationsModule implements OnModuleInit {
   constructor(@InjectQueue(AUTOMATION_SCHEDULE_TICK_QUEUE) private readonly tickQueue: Queue) {}
 
-  /** Registers the once-a-minute repeatable job that checks SCHEDULE-triggered automations. */
+  /** Registers the repeatable job that checks SCHEDULE-triggered automations. Widened from 60s to 5min — see schedules.module.ts for why. */
   async onModuleInit() {
     await this.tickQueue.add(
       'tick',
       {},
-      { repeat: { every: 60_000 }, removeOnComplete: true, removeOnFail: 50 },
+      { repeat: { every: 300_000 }, removeOnComplete: true, removeOnFail: 50 },
     );
   }
 }
