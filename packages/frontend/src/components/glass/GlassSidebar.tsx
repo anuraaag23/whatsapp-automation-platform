@@ -1,6 +1,7 @@
 'use client';
 
-import { ReactNode, useEffect, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -16,17 +17,40 @@ export interface SidebarItem {
   icon: ReactNode;
 }
 
-function useClickOutside<T extends HTMLElement>(onOutside: () => void) {
-  const ref = useRef<T | null>(null);
+/**
+ * Tracks a fixed-position anchor below a trigger element, recalculated
+ * while `active`. Popover content anchored this way gets portaled to
+ * <body> instead of rendered as a `position: absolute` child — GlassSidebar
+ * (like GlassNavbar and GlassSelect's various hosts) wraps its content in
+ * GlassSurface, which mounts a `backdrop-filter` on itself via
+ * useLiquidGlass. That filter drags every descendant — including
+ * position:absolute content that visually escapes the ancestor's own box —
+ * into the same filtered compositing layer, whose SVG displacement map is
+ * sized to the ancestor, not the popover. The result is the translucent/
+ * ghosted, rainbow-fringed look. Portaling out of that subtree is the fix.
+ */
+function useAnchoredPosition(triggerRef: React.RefObject<HTMLElement | null>, active: boolean) {
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  const recalc = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setPos({ top: rect.bottom + 8, left: rect.left, width: rect.width });
+  }, [triggerRef]);
+
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onOutside();
+    if (!active) return;
+    recalc();
+    window.addEventListener('resize', recalc);
+    window.addEventListener('scroll', recalc, true);
+    return () => {
+      window.removeEventListener('resize', recalc);
+      window.removeEventListener('scroll', recalc, true);
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return ref;
+  }, [active, recalc]);
+
+  return pos;
 }
 
 function OrgSwitcher() {
@@ -34,18 +58,44 @@ function OrgSwitcher() {
   const { data: orgs } = useMyOrganizations();
   const switchOrg = useSwitchOrganization();
   const currentUser = useAuthStore((s) => s.user);
-  const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
+
+  const triggerRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const pos = useAnchoredPosition(triggerRef, open);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const insideTrigger = triggerRef.current?.contains(target);
+      const insidePanel = panelRef.current?.contains(target);
+      if (!insideTrigger && !insidePanel) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const current = orgs?.find((o) => o.organization.id === currentUser?.organizationId) ?? orgs?.[0];
 
   return (
-    <div ref={ref} className="relative mb-4 px-2">
+    <div ref={triggerRef} className="relative mb-4 px-2">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left hover:bg-black/5 dark:hover:bg-white/10"
       >
-        <div className="h-8 w-8 shrink-0 rounded-xl bg-electric shadow-[0_4px_16px_rgba(10,132,255,0.5)]" />
+        {current?.organization.logoUrl ? (
+          <img
+            src={current.organization.logoUrl}
+            alt={current.organization.name}
+            className="h-8 w-8 shrink-0 rounded-xl object-cover shadow-[0_4px_16px_rgba(10,132,255,0.5)]"
+          />
+        ) : (
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-electric text-sm font-semibold text-white shadow-[0_4px_16px_rgba(10,132,255,0.5)]">
+            {(current?.organization.name ?? 'W').charAt(0).toUpperCase()}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-deep-navy dark:text-white">
             {current?.organization.name ?? 'WA Platform'}
@@ -55,40 +105,46 @@ function OrgSwitcher() {
         <ChevronsUpDown size={14} className="shrink-0 text-deep-navy/40 dark:text-white/30" />
       </button>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            className="absolute left-0 top-12 z-30 w-64 overflow-hidden rounded-2xl border border-white/30 bg-white/95 p-1.5 shadow-glass backdrop-blur-xl dark:border-white/10 dark:bg-deep-navy/95"
-          >
-            {orgs?.map((o) => (
-              <button
-                key={o.organization.id}
-                onClick={() => {
-                  if (o.organization.id !== currentUser?.organizationId) switchOrg.mutate(o.organization.id);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/10"
+      {mounted &&
+        createPortal(
+          <AnimatePresence>
+            {open && pos && (
+              <motion.div
+                ref={panelRef}
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                style={{ position: 'fixed', top: pos.top, left: pos.left, width: Math.max(pos.width, 256) }}
+                className="z-50 overflow-hidden rounded-2xl border border-white/30 bg-white/95 p-1.5 shadow-glass backdrop-blur-xl dark:border-white/10 dark:bg-deep-navy/95"
               >
-                <span className="flex-1 truncate text-deep-navy dark:text-white">{o.organization.name}</span>
-                <span className="text-[10px] text-deep-navy/40 dark:text-white/30">{o.role}</span>
-                {o.organization.id === currentUser?.organizationId && (
-                  <Check size={13} className="text-electric" />
-                )}
-              </button>
-            ))}
-            <Link
-              href="/dashboard/settings"
-              onClick={() => setOpen(false)}
-              className="mt-1 flex items-center gap-2 rounded-xl border-t border-black/5 px-2.5 py-2 text-left text-xs font-medium text-electric dark:border-white/10"
-            >
-              <Plus size={13} /> Create or manage organizations
-            </Link>
-          </motion.div>
+                {orgs?.map((o) => (
+                  <button
+                    key={o.organization.id}
+                    onClick={() => {
+                      if (o.organization.id !== currentUser?.organizationId) switchOrg.mutate(o.organization.id);
+                      setOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/10"
+                  >
+                    <span className="flex-1 truncate text-deep-navy dark:text-white">{o.organization.name}</span>
+                    <span className="text-[10px] text-deep-navy/40 dark:text-white/30">{o.role}</span>
+                    {o.organization.id === currentUser?.organizationId && (
+                      <Check size={13} className="text-electric" />
+                    )}
+                  </button>
+                ))}
+                <Link
+                  href="/dashboard/settings"
+                  onClick={() => setOpen(false)}
+                  className="mt-1 flex items-center gap-2 rounded-xl border-t border-black/5 px-2.5 py-2 text-left text-xs font-medium text-electric dark:border-white/10"
+                >
+                  <Plus size={13} /> Create or manage organizations
+                </Link>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
         )}
-      </AnimatePresence>
     </div>
   );
 }
@@ -114,7 +170,7 @@ export function GlassSidebar({ items }: { items: SidebarItem[] }) {
               key={item.href}
               href={item.href}
               className={clsx(
-                'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
+                'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors duration-300 delay-75',
                 active
                   ? 'text-white'
                   : 'text-deep-navy/70 hover:text-deep-navy dark:text-white/60 dark:hover:text-white',

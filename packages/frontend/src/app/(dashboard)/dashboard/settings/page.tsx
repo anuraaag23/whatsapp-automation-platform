@@ -7,6 +7,7 @@ import {
   useWhatsappAccount,
   useWhatsappAccountStatus,
   useConnectWhatsapp,
+  useDisconnectWhatsapp,
   useOrganization,
   useUpdateOrganization,
   useApiKeys,
@@ -33,6 +34,7 @@ export default function SettingsPage() {
   const { data: account } = useWhatsappAccount();
   const { data: liveStatus, isLoading: statusLoading, isError: statusError } = useWhatsappAccountStatus(Boolean(account));
   const connectWhatsapp = useConnectWhatsapp();
+  const disconnectWhatsapp = useDisconnectWhatsapp();
   const { data: org } = useOrganization();
   const updateOrg = useUpdateOrganization();
   const { data: apiKeys } = useApiKeys();
@@ -144,7 +146,18 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <GlassButton variant="ghost" size="sm" icon={<Unlink size={14} />} className="w-fit">
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              icon={<Unlink size={14} />}
+              loading={disconnectWhatsapp.isPending}
+              onClick={() => {
+                if (confirm('Disconnect this WhatsApp Business account? Sending and receiving messages will stop until you reconnect.')) {
+                  disconnectWhatsapp.mutate();
+                }
+              }}
+              className="w-fit"
+            >
               Disconnect
             </GlassButton>
           </div>

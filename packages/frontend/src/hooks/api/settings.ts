@@ -61,6 +61,16 @@ export function useConnectWhatsapp() {
   });
 }
 
+export function useDisconnectWhatsapp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      await apiClient.delete('/settings/whatsapp-account');
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['whatsapp-account'] }),
+  });
+}
+
 export function useOrganization() {
   return useQuery({
     queryKey: ['organization'],
