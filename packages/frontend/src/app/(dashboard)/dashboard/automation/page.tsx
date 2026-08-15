@@ -608,7 +608,7 @@ function NodePropertyEditor({
             options={availableTags.map((t) => ({ value: t.id, label: t.name }))}
           />
           <span className="text-[10px] text-deep-navy/40 dark:text-white/30">
-            Create new tags from the Contacts page — they'll show up here.
+            Create new tags from the Contacts page — they&apos;ll show up here.
           </span>
         </label>
       )}
