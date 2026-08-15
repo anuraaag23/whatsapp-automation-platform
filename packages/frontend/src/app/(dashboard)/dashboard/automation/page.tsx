@@ -40,6 +40,9 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
+  Tag as TagIcon,
+  UsersRound,
+  UserPen,
 } from 'lucide-react';
 import { GlassCard, GlassButton, GlassDialog, GlassSelect } from '@/components/glass';
 import {
@@ -55,6 +58,9 @@ import {
   AutomationNodeType,
 } from '@/hooks/api/automations';
 import { useContacts } from '@/hooks/api/contacts';
+import { useTags } from '@/hooks/api/contacts';
+import { useGroups } from '@/hooks/api/groups';
+import { useTemplates } from '@/hooks/api/templates';
 
 const NODE_STYLES: Record<AutomationNodeType, { icon: React.ReactNode; color: string; label: string }> = {
   trigger: { icon: <Zap size={14} />, color: 'border-electric bg-electric/10 text-electric', label: 'Trigger' },
@@ -65,6 +71,9 @@ const NODE_STYLES: Record<AutomationNodeType, { icon: React.ReactNode; color: st
   send_message: { icon: <Send size={14} />, color: 'border-emerald bg-emerald/10 text-emerald', label: 'Send Message' },
   ai: { icon: <Sparkles size={14} />, color: 'border-purple-400 bg-purple-400/10 text-purple-500', label: 'AI' },
   webhook: { icon: <WebhookIcon size={14} />, color: 'border-deep-navy/30 bg-black/5 text-deep-navy/70 dark:text-white/70', label: 'Webhook' },
+  add_tag: { icon: <TagIcon size={14} />, color: 'border-pink-400 bg-pink-400/10 text-pink-500', label: 'Add Tag' },
+  add_to_group: { icon: <UsersRound size={14} />, color: 'border-teal-400 bg-teal-400/10 text-teal-500', label: 'Add to Group' },
+  update_contact: { icon: <UserPen size={14} />, color: 'border-indigo-400 bg-indigo-400/10 text-indigo-500', label: 'Update Field' },
   finish: { icon: <Flag size={14} />, color: 'border-danger bg-danger/10 text-danger', label: 'Finish' },
 };
 
@@ -113,6 +122,12 @@ function summarizeNodeData(type: AutomationNodeType, data: Record<string, unknow
       return (data.prompt as string) || 'configure prompt →';
     case 'webhook':
       return (data.url as string) || 'configure URL →';
+    case 'add_tag':
+      return (data.tagName as string) || 'select a tag →';
+    case 'add_to_group':
+      return (data.groupName as string) || 'select a group →';
+    case 'update_contact':
+      return data.field ? `set ${data.field}` : 'configure field →';
     default:
       return '';
   }
@@ -127,6 +142,9 @@ const nodeTypes = {
   send_message: FlowNode,
   ai: FlowNode,
   webhook: FlowNode,
+  add_tag: FlowNode,
+  add_to_group: FlowNode,
+  update_contact: FlowNode,
   finish: FlowNode,
 };
 
@@ -145,6 +163,9 @@ function CanvasEditor({
   const createAutomation = useCreateAutomation();
   const runAutomation = useRunAutomation();
   const { data: contactsPage } = useContacts('');
+  const { data: availableTags } = useTags();
+  const { data: availableGroups } = useGroups();
+  const { data: availableTemplates } = useTemplates();
 
   const [name, setName] = useState('New Automation');
   const [nodes, setNodes] = useState<Node[]>([
@@ -409,6 +430,9 @@ function CanvasEditor({
             node={selectedNode}
             onChange={updateSelectedNodeData}
             onDelete={deleteSelectedNode}
+            availableTags={availableTags ?? []}
+            availableGroups={availableGroups ?? []}
+            availableTemplates={availableTemplates ?? []}
           />
         )}
       </GlassCard>
@@ -446,10 +470,16 @@ function NodePropertyEditor({
   node,
   onChange,
   onDelete,
+  availableTags,
+  availableGroups,
+  availableTemplates,
 }: {
   node: Node;
   onChange: (patch: Record<string, unknown>) => void;
   onDelete: () => void;
+  availableTags: { id: string; name: string }[];
+  availableGroups: { id: string; name: string }[];
+  availableTemplates: { id: string; name: string; waStatus?: string }[];
 }) {
   const type = node.type as AutomationNodeType;
   const data = node.data as Record<string, unknown>;
@@ -498,10 +528,44 @@ function NodePropertyEditor({
       )}
 
       {type === 'send_message' && (
-        <label className="flex flex-col gap-1 text-xs">
-          Message body ({'{{first_name}}'} etc. supported)
-          <textarea rows={4} value={(data.body as string) ?? ''} onChange={(e) => onChange({ body: e.target.value })} className={inputClass} />
-        </label>
+        <>
+          <label className="flex flex-col gap-1 text-xs">
+            Message type
+            <GlassSelect
+              value={(data.templateId as string) ? 'template' : 'text'}
+              onChange={(value) => onChange(value === 'template' ? { body: undefined } : { templateId: undefined })}
+              options={[
+                { value: 'text', label: 'Free text' },
+                { value: 'template', label: 'Approved template' },
+              ]}
+            />
+          </label>
+          {data.templateId ? (
+            <label className="flex flex-col gap-1 text-xs">
+              Template
+              {/* Outside WhatsApp's 24-hour customer-service window, only
+                  Meta-approved templates can be sent — free text silently
+                  fails. This is why "Send Template" matters as its own
+                  mode rather than always sending plain body text. */}
+              <GlassSelect
+                value={(data.templateId as string) ?? ''}
+                onChange={(value) => {
+                  const tpl = availableTemplates.find((t) => t.id === value);
+                  onChange({ templateId: value, templateName: tpl?.name });
+                }}
+                placeholder="Select an approved template…"
+                options={availableTemplates
+                  .filter((t) => t.waStatus === 'APPROVED' || !t.waStatus)
+                  .map((t) => ({ value: t.id, label: t.name }))}
+              />
+            </label>
+          ) : (
+            <label className="flex flex-col gap-1 text-xs">
+              Message body ({'{{first_name}}'} etc. supported)
+              <textarea rows={4} value={(data.body as string) ?? ''} onChange={(e) => onChange({ body: e.target.value })} className={inputClass} />
+            </label>
+          )}
+        </>
       )}
 
       {(type === 'delay' || type === 'wait') && (
@@ -529,6 +593,64 @@ function NodePropertyEditor({
           Webhook URL
           <input value={(data.url as string) ?? ''} onChange={(e) => onChange({ url: e.target.value })} className={inputClass} />
         </label>
+      )}
+
+      {type === 'add_tag' && (
+        <label className="flex flex-col gap-1 text-xs">
+          Tag to add to this contact
+          <GlassSelect
+            value={(data.tagId as string) ?? ''}
+            onChange={(value) => {
+              const tag = availableTags.find((t) => t.id === value);
+              onChange({ tagId: value, tagName: tag?.name });
+            }}
+            placeholder="Select a tag…"
+            options={availableTags.map((t) => ({ value: t.id, label: t.name }))}
+          />
+          <span className="text-[10px] text-deep-navy/40 dark:text-white/30">
+            Create new tags from the Contacts page — they'll show up here.
+          </span>
+        </label>
+      )}
+
+      {type === 'add_to_group' && (
+        <label className="flex flex-col gap-1 text-xs">
+          Group to add this contact to
+          <GlassSelect
+            value={(data.groupId as string) ?? ''}
+            onChange={(value) => {
+              const group = availableGroups.find((g) => g.id === value);
+              onChange({ groupId: value, groupName: group?.name });
+            }}
+            placeholder="Select a group…"
+            options={availableGroups.map((g) => ({ value: g.id, label: g.name }))}
+          />
+        </label>
+      )}
+
+      {type === 'update_contact' && (
+        <>
+          <label className="flex flex-col gap-1 text-xs">
+            Field to update
+            <GlassSelect
+              value={(data.field as string) ?? ''}
+              onChange={(value) => onChange({ field: value })}
+              placeholder="Select a field…"
+              options={[
+                { value: 'firstName', label: 'First name' },
+                { value: 'lastName', label: 'Last name' },
+                { value: 'email', label: 'Email' },
+                { value: 'company', label: 'Company' },
+                { value: 'city', label: 'City' },
+                { value: 'notes', label: 'Notes' },
+              ]}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            New value ({'{{ai_output}}'} or other flow variables supported)
+            <input value={(data.value as string) ?? ''} onChange={(e) => onChange({ value: e.target.value })} className={inputClass} />
+          </label>
+        </>
       )}
 
       {type === 'finish' && (

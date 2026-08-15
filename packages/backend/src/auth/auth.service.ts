@@ -44,6 +44,28 @@ export class AuthService {
   ) {}
 
   /**
+   * The single, correct place email-verification/password-reset links get
+   * their base URL from. Previously these links reused CORS_ORIGIN
+   * directly — which is meant to be a comma-separated *list* of allowed
+   * origins (see main.ts), not a single clean URL. That meant a link could
+   * come out malformed if CORS_ORIGIN ever held more than one value, and
+   * more importantly meant links silently kept pointing at whatever
+   * CORS_ORIGIN happened to be set to — including a now-dead URL after a
+   * Vercel project rename, with nothing forcing you to remember to update
+   * this specific usage too. FRONTEND_URL is the explicit, single source
+   * of truth going forward; CORS_ORIGIN's first entry is only a fallback
+   * for setups that haven't set the new var yet.
+   */
+  private getFrontendUrl(): string {
+    const explicit = this.config.get<string>('FRONTEND_URL');
+    if (explicit) return explicit.replace(/\/$/, '');
+
+    const corsOrigin = this.config.get<string>('CORS_ORIGIN');
+    const firstOrigin = corsOrigin?.split(',')[0]?.trim();
+    return firstOrigin || 'http://localhost:3000';
+  }
+
+  /**
    * Creates a new account. Two paths:
    * - Normal signup: creates a brand new organization, user becomes OWNER.
    * - Invite signup (dto.inviteToken set): joins the inviting organization
@@ -269,8 +291,7 @@ export class AuthService {
       },
     });
 
-    const frontendUrl = this.config.get<string>('CORS_ORIGIN') ?? 'http://localhost:3000';
-    const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
+    const resetUrl = `${this.getFrontendUrl()}/reset-password?token=${rawToken}`;
 
     await this.transactionalEmail.sendPasswordReset(user.email, resetUrl);
   }
@@ -318,8 +339,7 @@ export class AuthService {
       },
     });
 
-    const frontendUrl = this.config.get<string>('CORS_ORIGIN') ?? 'http://localhost:3000';
-    const verifyUrl = `${frontendUrl}/verify-email?token=${rawToken}`;
+    const verifyUrl = `${this.getFrontendUrl()}/verify-email?token=${rawToken}`;
 
     await this.transactionalEmail.sendEmailVerification(email, verifyUrl);
   }

@@ -12,6 +12,9 @@ export type AutomationNodeType =
   | 'wait'
   | 'branch'
   | 'webhook'
+  | 'add_tag'
+  | 'add_to_group'
+  | 'update_contact'
   | 'finish';
 
 export interface AutomationGraphNode {
