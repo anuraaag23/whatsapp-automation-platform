@@ -130,7 +130,8 @@ export default function AuditLogPage() {
 
       {/* Table */}
       <GlassCard variant="lite" padded={false} className="overflow-hidden">
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-sm">
           <thead>
             <tr className="border-b border-black/5 text-xs uppercase tracking-wide text-deep-navy/50 dark:border-white/10 dark:text-white/40">
               <th className="px-4 py-3 font-medium">When</th>
@@ -179,6 +180,7 @@ export default function AuditLogPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </GlassCard>
 
       {/* Pagination */}
