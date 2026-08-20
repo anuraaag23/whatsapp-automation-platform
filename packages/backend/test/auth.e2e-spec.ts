@@ -1,8 +1,6 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import cookieParser from 'cookie-parser';
-import { AppModule } from '../src/app.module';
+import { closeTestApp, createTestApp } from './utils/test-app';
 
 describe('Auth flow (e2e)', () => {
   let app: INestApplication;
@@ -10,19 +8,11 @@ describe('Auth flow (e2e)', () => {
   const password = 'SuperSecret123!';
 
   beforeAll(async () => {
-    const moduleRef: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleRef.createNestApplication();
-    app.use(cookieParser());
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-    app.setGlobalPrefix('api/v1');
-    await app.init();
+    app = await createTestApp();
   });
 
   afterAll(async () => {
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('registers a new organization + owner user', async () => {

@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { createTestApp, registerOwner, registerMemberWithRole, TestActor } from './utils/test-app';
+import { closeTestApp, createTestApp, registerOwner, registerMemberWithRole, TestActor } from './utils/test-app';
 
 describe('Role-based access control (e2e)', () => {
   let app: INestApplication;
@@ -16,7 +16,7 @@ describe('Role-based access control (e2e)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await closeTestApp(app);
   });
 
   describe('OWNER/ADMIN-only endpoints reject lower roles', () => {

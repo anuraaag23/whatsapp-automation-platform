@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { createTestApp, registerOwner, TestActor } from './utils/test-app';
+import { closeTestApp, createTestApp, registerOwner, TestActor } from './utils/test-app';
 
 describe('Segments (e2e)', () => {
   let app: INestApplication;
@@ -26,7 +26,7 @@ describe('Segments (e2e)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('previews a match count for a rule before saving a segment', async () => {

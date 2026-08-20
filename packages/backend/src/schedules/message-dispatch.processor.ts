@@ -31,16 +31,21 @@ export class MessageDispatchProcessor extends WorkerHost {
   async process(job: Job<DispatchJobData>): Promise<void> {
     const { organizationId, contactId, scheduleId, campaignId, templateId, body } = job.data;
 
-    const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+    // Scoped by (id, organizationId) together — job.data.organizationId is
+    // which account to send FROM, but was never actually verified against
+    // the contact/template being sent TO until this fix. See
+    // WhatsappService.sendToContact for the matching fix at the other end
+    // of this same call chain.
+    const contact = await this.prisma.contact.findFirst({ where: { id: contactId, organizationId } });
     if (!contact || contact.optInStatus !== 'OPTED_IN') {
-      this.logger.warn(`Skipping dispatch to ${contactId}: contact missing or not opted in`);
+      this.logger.warn(`Skipping dispatch to ${contactId}: contact missing, not opted in, or not in this organization`);
       return;
     }
 
     const rendered = body ? this.renderVariables(body, contact) : undefined;
 
     if (templateId) {
-      const template = await this.prisma.messageTemplate.findUnique({ where: { id: templateId } });
+      const template = await this.prisma.messageTemplate.findFirst({ where: { id: templateId, organizationId } });
       if (template) {
         await this.whatsappService.sendToContact({
           organizationId,

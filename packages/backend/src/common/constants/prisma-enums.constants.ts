@@ -98,3 +98,9 @@ export const NOTIFICATION_CHANNEL = {
   SLACK: 'SLACK',
   TELEGRAM: 'TELEGRAM',
 } as const;
+
+export const WEBHOOK_EVENT_STATUS = {
+  RECEIVED: 'RECEIVED',
+  PROCESSED: 'PROCESSED',
+  FAILED: 'FAILED',
+} as const;

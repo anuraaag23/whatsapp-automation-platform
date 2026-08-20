@@ -4,3 +4,13 @@ dist
 .env
 .git
 npm-debug.log
+
+# Explicit, unambiguous exclusion (the bare ".env" pattern above already
+# matches this at any depth, but spelling it out removes all doubt): this
+# is the Prisma CLI's test-only env file (see TEST_DATABASE_REPORT.md) and
+# must never end up inside a built image. If it somehow did, Prisma's own
+# env-loading precedence means an already-set real DATABASE_URL (which the
+# container always has, from docker-compose/Render) would still win — but
+# there's no reason to ship a test-database connection string in a
+# production image at all, so it's excluded outright.
+prisma/.env

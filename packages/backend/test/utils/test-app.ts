@@ -16,12 +16,30 @@ export async function createTestApp(): Promise<INestApplication> {
     imports: [AppModule],
   }).compile();
 
-  const app = moduleRef.createNestApplication();
+  // rawBody: true mirrors main.ts's bootstrap — without it, request.rawBody
+  // is undefined and WhatsappSignatureGuard has nothing to verify against.
+  const app = moduleRef.createNestApplication({ rawBody: true });
   app.use(cookieParser());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.setGlobalPrefix('api/v1');
   await app.init();
   return app;
+}
+
+/**
+ * Closes an app from afterAll(), defensively. If beforeAll's
+ * `createTestApp()` throws (e.g. the database is unreachable), Jest still
+ * runs afterAll — but the spec's `app` variable was never assigned, so
+ * calling `app.close()` directly throws its own unrelated
+ * "Cannot read properties of undefined (reading 'close')", which buries the
+ * real failure under a confusing second one. This only closes when there's
+ * actually something to close, and otherwise does nothing — it does not
+ * swallow or re-report the original beforeAll failure, which Jest already
+ * surfaces on its own.
+ */
+export async function closeTestApp(app: INestApplication | undefined): Promise<void> {
+  if (!app) return;
+  await app.close();
 }
 
 export interface TestActor {

@@ -11,6 +11,15 @@ node_modules/
 **/.env
 **/.env.local
 
+# Exception: packages/backend/prisma/.env is a dedicated, checked-in file.
+# It is read automatically by the Prisma CLI (migrate/generate/studio) —
+# never by the running app — and contains ONLY the fixed, deterministic
+# local docker-compose test-database connection string used to apply
+# migrations before e2e tests run (see TEST_DATABASE_REPORT.md). No real
+# credentials, secrets, or production URLs belong in this file, ever — if
+# that ever stops being true, remove this exception immediately.
+!packages/backend/prisma/.env
+
 # Build output
 dist/
 .next/

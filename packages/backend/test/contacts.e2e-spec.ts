@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { createTestApp, registerOwner, TestActor } from './utils/test-app';
+import { closeTestApp, createTestApp, registerOwner, TestActor } from './utils/test-app';
 
 describe('Contacts (e2e)', () => {
   let app: INestApplication;
@@ -16,7 +16,7 @@ describe('Contacts (e2e)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('rejects an invalid phone number', async () => {

@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { createTestApp, registerOwner, TestActor } from './utils/test-app';
+import { closeTestApp, createTestApp, registerOwner, TestActor } from './utils/test-app';
 
 describe('Templates (e2e)', () => {
   let app: INestApplication;
@@ -13,7 +13,7 @@ describe('Templates (e2e)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await closeTestApp(app);
   });
 
   it('rejects an invalid category', async () => {

@@ -417,6 +417,7 @@ model Message {
   @@index([organizationId, status])
   @@index([contactId])
   @@index([campaignId])
+  @@index([waMessageId])
   @@map("messages")
 }
 
@@ -708,6 +709,39 @@ model AutomationRun {
 enum AutomationRunStatus {
   RUNNING
   COMPLETED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Webhook idempotency (Phase B — WhatsApp webhook hardening)
+// ---------------------------------------------------------------------------
+
+/// Records each inbound provider webhook sub-event exactly once so a
+/// duplicate delivery (Meta explicitly documents that the same event can be
+/// delivered more than once) is detected and skipped instead of reprocessed.
+/// One WhatsApp POST can bundle several independent sub-events (status
+/// updates, inbound messages, template updates), so idempotency is tracked
+/// per sub-event rather than per HTTP request.
+model WebhookEvent {
+  id              String             @id @default(cuid())
+  provider        String             @default("whatsapp")
+  externalEventId String
+  eventType       String
+  payload         Json
+  status          WebhookEventStatus @default(RECEIVED)
+  receivedAt      DateTime           @default(now())
+  processedAt     DateTime?
+  error           String?
+  retryCount      Int                @default(0)
+
+  @@unique([provider, externalEventId])
+  @@index([provider, status])
+  @@map("webhook_events")
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
   FAILED
 }
 

@@ -23,4 +23,12 @@ COPY package*.json ./
 RUN chown -R app:app /app
 USER app
 EXPOSE 3001
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && node dist/main.js"]
+# prisma migrate deploy applies whatever migrations in prisma/migrations/
+# haven't been applied yet to DATABASE_URL, in order, non-interactively.
+# Unlike `prisma db push --accept-data-loss` (the previous command here),
+# it never resets, drops, or infers schema changes from a live diff — it
+# only ever runs the exact, reviewed SQL files already committed to the
+# repo. If it fails (e.g. a migration conflicts with the live database),
+# the container fails to start rather than silently mutating data, which
+# is the correct failure mode for a production boot step.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

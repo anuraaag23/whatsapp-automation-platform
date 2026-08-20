@@ -42,9 +42,20 @@ export class WhatsappService {
   async sendToContact(params: SendToContactParams) {
     const [account, contact] = await Promise.all([
       this.prisma.whatsappAccount.findUnique({ where: { organizationId: params.organizationId } }),
-      this.prisma.contact.findUnique({ where: { id: params.contactId } }),
+      // Scoped by (id, organizationId) together, not just id — without
+      // this, a contactId belonging to a different organization would
+      // resolve successfully here, and this org's WhatsApp account would
+      // send a message to someone else's contact. Every caller of
+      // sendToContact relies on this method being the actual tenant
+      // boundary, so the check has to live here, not be re-implemented (or
+      // forgotten) at each call site.
+      this.prisma.contact.findFirst({ where: { id: params.contactId, organizationId: params.organizationId } }),
     ]);
 
+    // Deliberately the same "not found" whether the contact genuinely
+    // doesn't exist or exists but belongs to another org — a caller has no
+    // legitimate reason to distinguish those two cases, and doing so would
+    // let them enumerate other organizations' contact IDs.
     if (!contact) throw new NotFoundException('Contact not found');
 
     const message = await this.prisma.message.create({

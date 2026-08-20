@@ -1,16 +1,25 @@
-import { Body, Controller, Get, Logger, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '../common/decorators/public.decorator';
-import { WhatsappService } from './whatsapp.service';
+import { WebhookEventProcessorService } from './webhook-event-processor.service';
+import { WhatsappSignatureGuard } from './guards/whatsapp-signature.guard';
 
 /**
  * Meta's Cloud API webhook contract:
  * - GET: one-time verification handshake when you configure the webhook URL
  *   in the Meta App dashboard (hub.mode / hub.verify_token / hub.challenge).
- * - POST: ongoing delivery of message status updates and inbound messages.
+ * - POST: ongoing delivery of message status updates and inbound messages,
+ *   authenticated via the X-Hub-Signature-256 header (see
+ *   WhatsappSignatureGuard) rather than the app's normal JWT auth — Meta is
+ *   not a logged-in user.
  * https://developers.facebook.com/docs/graph-api/webhooks/getting-started
+ *
+ * The actual exactly-once persistence, dispatch, and retry logic lives in
+ * WebhookEventProcessorService — this controller's job is just to parse
+ * Meta's payload shape into per-sub-event (eventType, externalEventId,
+ * payload) tuples and hand them off.
  */
 @Controller('webhooks/whatsapp')
 export class WhatsappWebhookController {
@@ -18,8 +27,7 @@ export class WhatsappWebhookController {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly whatsappService: WhatsappService,
-    private readonly events: EventEmitter2,
+    private readonly webhookEventProcessor: WebhookEventProcessorService,
   ) {}
 
   @Public()
@@ -37,7 +45,15 @@ export class WhatsappWebhookController {
     return res.sendStatus(403);
   }
 
+  // Authenticity here comes from the signature guard, not the global JWT
+  // guard (this route is @Public() with respect to JWT — Meta never has an
+  // access token). The generic 120 req/min API throttle is still a global
+  // guard and would still apply on top of this; the override below gives
+  // this specific, now-authenticated route more headroom for legitimate
+  // Meta delivery bursts without loosening the limit anywhere else.
   @Public()
+  @UseGuards(WhatsappSignatureGuard)
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   @Post()
   async receive(@Body() payload: any) {
     try {
@@ -47,29 +63,44 @@ export class WhatsappWebhookController {
           const value = change.value;
 
           for (const status of value?.statuses ?? []) {
-            await this.whatsappService.applyStatusUpdate(status.id, status.status);
+            // Same WAMID legitimately recurs across sent -> delivered ->
+            // read, so the status itself has to be part of the dedupe key,
+            // not just the message id.
+            await this.webhookEventProcessor.processOnce(
+              'message_status',
+              `${status.id}:${status.status}`,
+              status,
+              () => this.webhookEventProcessor.dispatchByEventType('message_status', status),
+            );
           }
 
           // Meta sends template approval/rejection updates on this same
           // webhook via a distinct field, separate from message statuses.
           if (change.field === 'message_template_status_update' && value?.message_template_id) {
-            this.events.emit('whatsapp.template_status_update', {
-              waTemplateId: String(value.message_template_id),
-              status: value?.event,
-              reason: value?.reason,
-            });
+            await this.webhookEventProcessor.processOnce(
+              'template_status_update',
+              `${value.message_template_id}:${value.event}`,
+              value,
+              () => this.webhookEventProcessor.dispatchByEventType('template_status_update', value),
+            );
           }
 
           // Inbound messages feed the automation engine's KEYWORD_RECEIVED
           // trigger via an event (kept decoupled from AutomationsModule to
           // avoid a circular module dependency).
           for (const inbound of value?.messages ?? []) {
-            this.logger.log(`Inbound WhatsApp message from ${inbound.from}: ${inbound.type}`);
-            this.events.emit('whatsapp.inbound_message', {
-              phoneNumberId: value?.metadata?.phone_number_id,
-              from: inbound.from,
-              text: inbound.text?.body ?? '',
-            });
+            // phone_number_id lives on the surrounding `value.metadata`,
+            // not on the individual message object — folded into the
+            // stored payload here (not just captured by closure) so a
+            // later retry has everything dispatchByEventType needs,
+            // without needing the original HTTP request.
+            const inboundWithContext = { ...inbound, _phoneNumberId: value?.metadata?.phone_number_id };
+            await this.webhookEventProcessor.processOnce(
+              'inbound_message',
+              inbound.id,
+              inboundWithContext,
+              () => this.webhookEventProcessor.dispatchByEventType('inbound_message', inboundWithContext),
+            );
           }
         }
       }

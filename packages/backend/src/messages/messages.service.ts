@@ -65,10 +65,13 @@ export class MessagesService {
    * only), with no way to actually send anything from it.
    */
   async sendAdHoc(organizationId: string, dto: SendMessageDto) {
-    // Scope check: without this, a crafted contactId from another
-    // organization would happily get a message sent to it, since
-    // WhatsappService.sendToContact() itself only looks the contact up by
-    // raw id, not by (id, organizationId) together.
+    // Scope check: fails fast with a clear message before attempting to
+    // send. WhatsappService.sendToContact() now also enforces this same
+    // (id, organizationId) scoping itself, so this isn't the only thing
+    // standing between a crafted cross-org contactId and an actual send —
+    // but checking it here too means a bad contactId is rejected before
+    // this method does anything else (e.g. the opt-in check below), rather
+    // than only failing deeper in the call chain.
     const contact = await this.prisma.contact.findFirst({
       where: { id: dto.contactId, organizationId },
     });
