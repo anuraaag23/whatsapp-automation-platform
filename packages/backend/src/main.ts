@@ -30,6 +30,21 @@ async function bootstrap() {
 
   const port = process.env.PORT ? Number(process.env.PORT) : 3001;
   await app.listen(port);
+
+  // Raise Node's default 5s keepAliveTimeout. This app sits behind a
+  // reverse proxy (Caddy / Cloudflare Tunnel in this project's deployment)
+  // that reuses persistent connections to this backend; if Node decides an
+  // idle kept-alive connection has expired at roughly the same moment the
+  // proxy reuses it to forward a new request, the proxy sees a connection
+  // reset. The standard fix — used the same way in front of any
+  // load balancer — is for the backend's keepAliveTimeout to comfortably
+  // exceed the proxy's own idle/keep-alive timeout so the backend is never
+  // the one racing to close first. headersTimeout must stay above
+  // keepAliveTimeout or Node ignores the keepAliveTimeout value entirely.
+  const httpServer = app.getHttpServer();
+  httpServer.keepAliveTimeout = 65_000;
+  httpServer.headersTimeout = 66_000;
+
   // eslint-disable-next-line no-console
   console.log(`Backend listening on http://localhost:${port}/api/v1`);
 }

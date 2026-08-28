@@ -1,19 +1,24 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Module, OnModuleInit, Logger } from '@nestjs/common';
 import { BullModule, InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SchedulesService } from './schedules.service';
 import { SchedulesController } from './schedules.controller';
 import { ScheduleTickProcessor } from './schedule-tick.processor';
 import { MessageDispatchProcessor } from './message-dispatch.processor';
-import { QueueModule, MESSAGE_DISPATCH_QUEUE, SCHEDULE_TICK_QUEUE } from '../queue/queue.module';
+import { QueueModule, SCHEDULE_TICK_QUEUE } from '../queue/queue.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { ContactsModule } from '../contacts/contacts.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 
 @Module({
   imports: [
+    // MESSAGE_DISPATCH_QUEUE is registered once, in QueueModule itself, and
+    // re-exported from there — see QueueModule's docstring for why it's no
+    // longer registered separately here (it used to be, alongside a
+    // near-identical registration in CampaignsModule and HealthModule,
+    // which meant three independent Redis connections for one queue).
     QueueModule,
-    BullModule.registerQueue({ name: MESSAGE_DISPATCH_QUEUE }, { name: SCHEDULE_TICK_QUEUE }),
+    BullModule.registerQueue({ name: SCHEDULE_TICK_QUEUE }),
     WhatsappModule,
     ContactsModule,
     CampaignsModule,
@@ -23,7 +28,14 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
   exports: [SchedulesService],
 })
 export class SchedulesModule implements OnModuleInit {
-  constructor(@InjectQueue(SCHEDULE_TICK_QUEUE) private readonly tickQueue: Queue) {}
+  private readonly logger = new Logger(SchedulesModule.name);
+
+  constructor(@InjectQueue(SCHEDULE_TICK_QUEUE) private readonly tickQueue: Queue) {
+    // See SchedulesService's constructor for why this listener is required
+    // — an unhandled 'error' event on a BullMQ Queue is a Node.js
+    // uncaught exception, not a caught/logged error.
+    this.tickQueue.on('error', (error) => this.logger.error(`SCHEDULE_TICK_QUEUE connection error: ${error.message}`, error.stack));
+  }
 
   /** Registers the once-a-minute repeatable tick job. Idempotent — BullMQ dedupes by repeat key. */
   async onModuleInit() {

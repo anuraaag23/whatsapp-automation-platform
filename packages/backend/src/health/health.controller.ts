@@ -1,4 +1,4 @@
-import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Public } from '../common/decorators/public.decorator';
@@ -7,10 +7,17 @@ import { MESSAGE_DISPATCH_QUEUE } from '../queue/queue.module';
 
 @Controller('health')
 export class HealthController {
+  private readonly logger = new Logger(HealthController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(MESSAGE_DISPATCH_QUEUE) private readonly queue: Queue,
-  ) {}
+  ) {
+    // See SchedulesService's constructor for why this listener is required
+    // — an unhandled 'error' event on a BullMQ Queue is a Node.js
+    // uncaught exception, not a caught/logged error.
+    this.queue.on('error', (error) => this.logger.error(`MESSAGE_DISPATCH_QUEUE connection error: ${error.message}`, error.stack));
+  }
 
   /** Liveness — is the process up at all. Always returns 200 if the app can respond. */
   @Public()

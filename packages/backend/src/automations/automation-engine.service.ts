@@ -34,7 +34,12 @@ export class AutomationEngineService {
     private readonly whatsappService: WhatsappService,
     private readonly aiService: AiService,
     @InjectQueue(AUTOMATION_RUN_QUEUE) private readonly runQueue: Queue,
-  ) {}
+  ) {
+    // See WebhookEventProcessorService's constructor for why this listener
+    // is required — an unhandled 'error' event on a BullMQ Queue is a
+    // Node.js uncaught exception, not a caught/logged error.
+    this.runQueue.on('error', (error) => this.logger.error(`AUTOMATION_RUN_QUEUE connection error: ${error.message}`, error.stack));
+  }
 
   /** Entry point: starts a fresh run from the automation's trigger node, logging an AutomationRun row. */
   async start(automationId: string, context: AutomationRunContext) {

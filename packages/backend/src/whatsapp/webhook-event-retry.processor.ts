@@ -1,4 +1,4 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { WEBHOOK_EVENT_RETRY_QUEUE } from './whatsapp.constants';
@@ -10,6 +10,12 @@ export class WebhookEventRetryProcessor extends WorkerHost {
 
   constructor(private readonly webhookEventProcessor: WebhookEventProcessorService) {
     super();
+  }
+
+  // See MessageDispatchProcessor for why this is required.
+  @OnWorkerEvent('error')
+  onError(error: Error) {
+    this.logger.error(`WebhookEventRetryProcessor worker error: ${error.message}`, error.stack);
   }
 
   async process(_job: Job): Promise<void> {

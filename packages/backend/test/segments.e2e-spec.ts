@@ -26,8 +26,20 @@ describe('Segments (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Explicit, generous timeout (Jest's default hook timeout is 5000ms).
+    // A full NestJS app shutdown here closes ~6 BullMQ workers'
+    // Redis connections plus the Prisma connection pool; under load
+    // (especially right after the webhook burst test) that can
+    // legitimately take a few seconds. If Jest's own hook timeout fires
+    // before app.close() actually finishes, Jest moves on to the next
+    // file WITHOUT cancelling the in-flight close() — it keeps running in
+    // the background, competing for the exact same Redis/Postgres
+    // connections the next file's beforeAll needs, which is what actually
+    // caused later files' beforeAll to time out (see PHASE_C3_REPORT.md).
+    // Giving close() enough time to genuinely finish, instead of being
+    // abandoned, is the fix — not a cover-up of the beforeAll symptom.
     await closeTestApp(app);
-  });
+  }, 30_000);
 
   it('previews a match count for a rule before saving a segment', async () => {
     const res = await request(app.getHttpServer())

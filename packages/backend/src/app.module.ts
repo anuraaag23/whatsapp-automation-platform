@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { ContactsModule } from './contacts/contacts.module';
+import { ConversationsModule } from './conversations/conversations.module';
 import { TemplatesModule } from './templates/templates.module';
 import { MessagesModule } from './messages/messages.module';
 import { SchedulesModule } from './schedules/schedules.module';
@@ -30,7 +31,7 @@ import { AuditModule } from './audit/audit.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    EventEmitterModule.forRoot(),
+    EventEmitterModule.forRoot({ global: true }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 120 }]),
     PrismaModule,
     CryptoModule,
@@ -39,6 +40,7 @@ import { AuditModule } from './audit/audit.module';
     UsersModule,
     WhatsappModule,
     ContactsModule,
+    ConversationsModule,
     TemplatesModule,
     MessagesModule,
     SchedulesModule,

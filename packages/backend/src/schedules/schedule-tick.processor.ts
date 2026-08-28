@@ -1,4 +1,4 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { SCHEDULE_TICK_QUEUE } from '../queue/queue.module';
@@ -10,6 +10,12 @@ export class ScheduleTickProcessor extends WorkerHost {
 
   constructor(private readonly schedulesService: SchedulesService) {
     super();
+  }
+
+  // See MessageDispatchProcessor for why this is required.
+  @OnWorkerEvent('error')
+  onError(error: Error) {
+    this.logger.error(`ScheduleTickProcessor worker error: ${error.message}`, error.stack);
   }
 
   async process(_job: Job): Promise<void> {

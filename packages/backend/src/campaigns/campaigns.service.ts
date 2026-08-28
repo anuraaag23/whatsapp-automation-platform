@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Queue } from 'bullmq';
@@ -20,13 +20,20 @@ const TERMINAL_STATUSES: MessageStatus[] = [
 
 @Injectable()
 export class CampaignsService {
+  private readonly logger = new Logger(CampaignsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audienceResolver: AudienceResolverService,
     private readonly notifications: NotificationsService,
     private readonly events: EventEmitter2,
     @InjectQueue(MESSAGE_DISPATCH_QUEUE) private readonly dispatchQueue: Queue,
-  ) {}
+  ) {
+    // See WebhookEventProcessorService's constructor for why this listener
+    // is required — an unhandled 'error' event on a BullMQ Queue is a
+    // Node.js uncaught exception, not a caught/logged error.
+    this.dispatchQueue.on('error', (error) => this.logger.error(`MESSAGE_DISPATCH_QUEUE connection error: ${error.message}`, error.stack));
+  }
 
   list(organizationId: string) {
     return this.prisma.campaign.findMany({

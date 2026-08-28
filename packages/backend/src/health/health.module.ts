@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
 import { HealthController } from './health.controller';
-import { QueueModule, MESSAGE_DISPATCH_QUEUE } from '../queue/queue.module';
+import { QueueModule } from '../queue/queue.module';
 
 @Module({
-  imports: [QueueModule, BullModule.registerQueue({ name: MESSAGE_DISPATCH_QUEUE })],
+  // MESSAGE_DISPATCH_QUEUE comes from QueueModule's own export now — see
+  // its docstring. Do not re-register it here with BullModule.registerQueue.
+  imports: [QueueModule],
   controllers: [HealthController],
 })
 export class HealthModule {}

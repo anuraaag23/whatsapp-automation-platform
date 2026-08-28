@@ -17,6 +17,10 @@ export interface ContactCreatedEvent {
 }
 
 export interface WhatsappInboundEvent {
+  organizationId: string;
+  contactId: string;
+  conversationId: string;
+  messageId: string;
   phoneNumberId: string;
   from: string;
   text: string;
@@ -179,22 +183,24 @@ export class AutomationsService {
     return { started: true };
   }
 
-  /** Wired trigger #1: fires every ACTIVE automation whose keyword matches an inbound message. */
+  /**
+   * Wired trigger #1: fires every ACTIVE automation whose keyword matches
+   * an inbound message. organizationId/contactId come directly from the
+   * event — InboundMessageService has already resolved (and, if this was
+   * a brand-new sender, created) both as part of persisting the message,
+   * so there's no need to re-derive them here, and no scenario where the
+   * contact "doesn't exist yet" by the time this listener runs.
+   */
   @OnEvent('whatsapp.inbound_message')
   async handleInboundMessage(event: WhatsappInboundEvent) {
-    const account = await this.prisma.whatsappAccount.findFirst({
-      where: { phoneNumberId: event.phoneNumberId },
-    });
-    if (!account) return;
-
     const contact = await this.prisma.contact.findFirst({
-      where: { organizationId: account.organizationId, phoneNumber: event.from },
+      where: { id: event.contactId, organizationId: event.organizationId },
     });
     if (!contact) return;
 
     const automations = await this.prisma.automation.findMany({
       where: {
-        organizationId: account.organizationId,
+        organizationId: event.organizationId,
         status: AUTOMATION_STATUS.ACTIVE,
         triggerType: 'KEYWORD_RECEIVED',
       },
@@ -215,7 +221,7 @@ export class AutomationsService {
 
       if (keyword && event.text.toLowerCase().includes(keyword.toLowerCase())) {
         await this.engine.start(automation.id, {
-          organizationId: account.organizationId,
+          organizationId: event.organizationId,
           contactId: contact.id,
           variables,
         });

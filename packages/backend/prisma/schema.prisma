@@ -49,6 +49,7 @@ model Organization {
   apiKeys            ApiKey[]
   auditLogs          AuditLog[]
   whatsappAccount    WhatsappAccount?
+  conversations      Conversation[]
   notificationSettings NotificationSettings?
   groups             ContactGroup[]
 
@@ -91,6 +92,7 @@ model User {
   memberships    OrganizationMember[]
   passwordResetTokens    PasswordResetToken[]
   emailVerificationTokens EmailVerificationToken[]
+  assignedConversations Conversation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -197,6 +199,7 @@ model WhatsappAccount {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
+  @@index([phoneNumberId])
   @@map("whatsapp_accounts")
 }
 
@@ -230,6 +233,7 @@ model Contact {
   groups         ContactGroupMember[]
   messages       Message[]
   campaignRecipients CampaignRecipient[]
+  conversations  Conversation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -391,12 +395,15 @@ model Message {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   contactId      String
   contact        Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   direction      MessageDirection
   type           MessageType
   content        Json
   status         MessageStatus @default(QUEUED)
   waMessageId    String?
+  providerTimestamp DateTime?
   errorCode      String?
   errorMessage   String?
   retryCount     Int      @default(0)
@@ -414,10 +421,11 @@ model Message {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([organizationId, waMessageId])
   @@index([organizationId, status])
   @@index([contactId])
   @@index([campaignId])
-  @@index([waMessageId])
+  @@index([conversationId, createdAt])
   @@map("messages")
 }
 
@@ -437,6 +445,7 @@ enum MessageType {
   INTERACTIVE_BUTTONS
   INTERACTIVE_LIST
   TEMPLATE
+  UNKNOWN
 }
 
 enum MessageStatus {
@@ -445,6 +454,52 @@ enum MessageStatus {
   DELIVERED
   READ
   FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Conversations (Phase D — durable, tenant-isolated thread per contact)
+// ---------------------------------------------------------------------------
+
+/// One conversation per (organization, contact). The current architecture
+/// has exactly one WhatsApp account/phone number per organization
+/// (WhatsappAccount.organizationId is @unique — see Phase I in
+/// PRODUCTION_UPGRADE_PLAN.md for the planned multi-account upgrade), so
+/// organization+contact alone is enough to uniquely identify a channel
+/// today; this intentionally doesn't try to anticipate multi-account
+/// scoping ahead of that phase actually landing.
+model Conversation {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contactId      String
+  contact        Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  status         ConversationStatus @default(OPEN)
+  assignedUserId String?
+  assignedUser   User?    @relation(fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  unreadCount    Int       @default(0)
+  lastMessageAt  DateTime?
+  lastInboundAt  DateTime?
+  lastOutboundAt DateTime?
+
+  metadata       Json      @default("{}")
+
+  messages       Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([organizationId, contactId])
+  @@index([organizationId, status, lastMessageAt])
+  @@index([organizationId, assignedUserId])
+  @@map("conversations")
+}
+
+enum ConversationStatus {
+  OPEN
+  RESOLVED
+  ARCHIVED
 }
 
 // ---------------------------------------------------------------------------

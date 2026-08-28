@@ -16,10 +16,17 @@ import { WhatsappSignatureGuard } from './guards/whatsapp-signature.guard';
  *   not a logged-in user.
  * https://developers.facebook.com/docs/graph-api/webhooks/getting-started
  *
- * The actual exactly-once persistence, dispatch, and retry logic lives in
- * WebhookEventProcessorService — this controller's job is just to parse
- * Meta's payload shape into per-sub-event (eventType, externalEventId,
- * payload) tuples and hand them off.
+ * This controller's job is deliberately small: parse Meta's payload shape
+ * into per-sub-event (eventType, externalEventId, payload) tuples and hand
+ * each off to WebhookEventProcessorService.acceptOnce(), which does one
+ * fast, idempotent INSERT and returns — it does NOT run the actual
+ * business logic inline. That runs asynchronously on a BullMQ worker
+ * (WebhookEventDispatchProcessor), which is what lets this endpoint
+ * acknowledge a burst of legitimate Meta deliveries quickly instead of
+ * serializing on database connection-pool pressure for the full
+ * dispatch chain (WhatsApp status updates, and via EventEmitter2's
+ * synchronous dispatch, whatever the automation engine does in response
+ * to an inbound message).
  */
 @Controller('webhooks/whatsapp')
 export class WhatsappWebhookController {
@@ -50,7 +57,10 @@ export class WhatsappWebhookController {
   // access token). The generic 120 req/min API throttle is still a global
   // guard and would still apply on top of this; the override below gives
   // this specific, now-authenticated route more headroom for legitimate
-  // Meta delivery bursts without loosening the limit anywhere else.
+  // Meta delivery bursts without loosening the limit anywhere else. This
+  // is now realistic to rely on, rather than a target the endpoint
+  // couldn't actually sustain, because the request path is a single fast
+  // INSERT per sub-event instead of the full dispatch chain.
   @Public()
   @UseGuards(WhatsappSignatureGuard)
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
@@ -66,22 +76,16 @@ export class WhatsappWebhookController {
             // Same WAMID legitimately recurs across sent -> delivered ->
             // read, so the status itself has to be part of the dedupe key,
             // not just the message id.
-            await this.webhookEventProcessor.processOnce(
-              'message_status',
-              `${status.id}:${status.status}`,
-              status,
-              () => this.webhookEventProcessor.dispatchByEventType('message_status', status),
-            );
+            await this.webhookEventProcessor.acceptOnce('message_status', `${status.id}:${status.status}`, status);
           }
 
           // Meta sends template approval/rejection updates on this same
           // webhook via a distinct field, separate from message statuses.
           if (change.field === 'message_template_status_update' && value?.message_template_id) {
-            await this.webhookEventProcessor.processOnce(
+            await this.webhookEventProcessor.acceptOnce(
               'template_status_update',
               `${value.message_template_id}:${value.event}`,
               value,
-              () => this.webhookEventProcessor.dispatchByEventType('template_status_update', value),
             );
           }
 
@@ -92,20 +96,21 @@ export class WhatsappWebhookController {
             // phone_number_id lives on the surrounding `value.metadata`,
             // not on the individual message object — folded into the
             // stored payload here (not just captured by closure) so a
-            // later retry has everything dispatchByEventType needs,
-            // without needing the original HTTP request.
+            // later retry/async-process step has everything
+            // dispatchByEventType needs, without needing the original
+            // HTTP request.
             const inboundWithContext = { ...inbound, _phoneNumberId: value?.metadata?.phone_number_id };
-            await this.webhookEventProcessor.processOnce(
-              'inbound_message',
-              inbound.id,
-              inboundWithContext,
-              () => this.webhookEventProcessor.dispatchByEventType('inbound_message', inboundWithContext),
-            );
+            await this.webhookEventProcessor.acceptOnce('inbound_message', inbound.id, inboundWithContext);
           }
         }
       }
     } catch (error) {
-      this.logger.error('Failed to process WhatsApp webhook payload', error as Error);
+      // Passing (error as Error).stack, not the raw Error object — Logger's
+      // second argument is a stack-trace string; passing the Error itself
+      // was only surfacing error.message in the logs, hiding exactly where
+      // the throw originated (acceptOnce's Prisma insert vs. its queue.add()
+      // call vs. something else entirely).
+      this.logger.error('Failed to process WhatsApp webhook payload', (error as Error).stack);
     }
 
     return { received: true };

@@ -1,4 +1,4 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,6 +22,12 @@ export class AutomationRunProcessor extends WorkerHost {
     private readonly engine: AutomationEngineService,
   ) {
     super();
+  }
+
+  // See MessageDispatchProcessor for why this is required.
+  @OnWorkerEvent('error')
+  onError(error: Error) {
+    this.logger.error(`AutomationRunProcessor worker error: ${error.message}`, error.stack);
   }
 
   async process(job: Job<ContinueJobData>): Promise<void> {

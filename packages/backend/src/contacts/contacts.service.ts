@@ -1,6 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
@@ -69,43 +69,46 @@ export class ContactsService {
   async create(organizationId: string, dto: CreateContactDto) {
     const { tagIds, customFields, ...rest } = dto;
 
-    // Without this check, a duplicate phoneNumber only fails at the DB's
-    // @@unique([organizationId, phoneNumber]) constraint, which surfaces as
-    // an unhandled PrismaClientKnownRequestError (P2002) — no exception
-    // filter in this app maps that to an HTTP status, so it was reaching
-    // the client as a bare 500 instead of a clean, expected 409.
-    const existing = await this.prisma.contact.findUnique({
-      where: { organizationId_phoneNumber: { organizationId, phoneNumber: dto.phoneNumber } },
-    });
-    if (existing) {
-      throw new ConflictException(`A contact with phone number ${dto.phoneNumber} already exists`);
-    }
+    // Try to create directly — the unique constraint on (organizationId, phoneNumber)
+    // is the source of truth for concurrency. If a concurrent request creates the
+    // same contact first, we'll get P2002 and throw ConflictException to signal
+    // a duplicate to the caller (API should return 409). The inbound message
+    // path (InboundMessageService.findOrCreateContact) catches this and re-reads.
+    try {
+      const contact = await this.prisma.contact.create({
+        data: {
+          ...rest,
+          organizationId,
+          phoneNumber: dto.phoneNumber,
+          optInStatus: 'PENDING',
+          ...(customFields ? { customFields: customFields as Prisma.InputJsonValue } : {}),
+          ...(tagIds?.length
+            ? { tags: { create: tagIds.map((tagId) => ({ tagId })) } }
+            : {}),
+        },
+        include: { tags: { include: { tag: true } } },
+      });
 
-    const contact = await this.prisma.contact.create({
-      data: {
-        ...rest,
+      this.events.emit('contact.created', {
         organizationId,
-        optInStatus: 'PENDING',
-        ...(customFields ? { customFields: customFields as Prisma.InputJsonValue } : {}),
-        ...(tagIds?.length
-          ? { tags: { create: tagIds.map((tagId) => ({ tagId })) } }
-          : {}),
-      },
-      include: { tags: { include: { tag: true } } },
-    });
+        contactId: contact.id,
+        variables: {
+          first_name: contact.firstName ?? '',
+          last_name: contact.lastName ?? '',
+          company: contact.company ?? '',
+          city: contact.city ?? '',
+        },
+      });
 
-    this.events.emit('contact.created', {
-      organizationId,
-      contactId: contact.id,
-      variables: {
-        first_name: contact.firstName ?? '',
-        last_name: contact.lastName ?? '',
-        company: contact.company ?? '',
-        city: contact.city ?? '',
-      },
-    });
-
-    return contact;
+      return contact;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        // Duplicate phone number — throw ConflictException for API callers
+        // (InboundMessageService.findOrCreateContact catches this and re-reads)
+        throw new ConflictException('Contact with this phone number already exists');
+      }
+      throw error;
+    }
   }
 
   async update(organizationId: string, id: string, dto: UpdateContactDto) {

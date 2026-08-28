@@ -64,5 +64,17 @@ process.env.SECRETS_ENCRYPTION_KEY = 'e2e_test_secrets_encryption_key__do_not_us
  * developer might actually be looking at. See TEST_DATABASE_REPORT.md for
  * the one-time setup command to create this database.
  */
-process.env.DATABASE_URL = 'postgresql://waplatform:waplatform@127.0.0.1:5433/waplatform_test?schema=public';
-process.env.DIRECT_DATABASE_URL = 'postgresql://waplatform:waplatform@127.0.0.1:5433/waplatform_test?schema=public';
+process.env.DATABASE_URL = 'postgresql://waplatform:change_me@127.0.0.1:5433/waplatform_test?schema=public';
+process.env.DIRECT_DATABASE_URL = 'postgresql://waplatform:change_me@127.0.0.1:5433/waplatform_test?schema=public';
+
+/**
+ * BullMQ e2e tests run against the project's real docker-compose Redis
+ * service, not a mock — see the comment at the top of QueueModule for why
+ * a fake client isn't an acceptable stand-in for a system whose workers
+ * depend on Redis's actual Lua/scripting behavior. This is the same
+ * unauthenticated instance docker-compose.yml exposes on 127.0.0.1:6379
+ * for local dev; it must be running (`docker compose up -d redis`) before
+ * `npm run test:e2e`.
+ */
+process.env.REDIS_HOST = '127.0.0.1';
+process.env.REDIS_PORT = '6379';

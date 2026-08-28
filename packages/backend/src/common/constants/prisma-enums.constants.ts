@@ -55,6 +55,11 @@ export const MESSAGE_STATUS = {
   FAILED: 'FAILED',
 } as const;
 
+export const MESSAGE_DIRECTION = {
+  INBOUND: 'INBOUND',
+  OUTBOUND: 'OUTBOUND',
+} as const;
+
 export const MESSAGE_TYPE = {
   TEXT: 'TEXT',
   IMAGE: 'IMAGE',
@@ -66,6 +71,13 @@ export const MESSAGE_TYPE = {
   INTERACTIVE_BUTTONS: 'INTERACTIVE_BUTTONS',
   INTERACTIVE_LIST: 'INTERACTIVE_LIST',
   TEMPLATE: 'TEMPLATE',
+  UNKNOWN: 'UNKNOWN',
+} as const;
+
+export const CONVERSATION_STATUS = {
+  OPEN: 'OPEN',
+  RESOLVED: 'RESOLVED',
+  ARCHIVED: 'ARCHIVED',
 } as const;
 
 export const SCHEDULE_STATUS = {

@@ -1,9 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WEBHOOK_EVENT_STATUS } from '../common/constants/prisma-enums.constants';
 import { WhatsappService } from './whatsapp.service';
+import { InboundMessageService } from './inbound-message.service';
+import { WEBHOOK_EVENT_PROCESS_QUEUE } from './whatsapp.constants';
 
 /** After this many failed attempts, a webhook event is left FAILED permanently rather than retried again. */
 const MAX_RETRY_ATTEMPTS = 5;
@@ -17,26 +21,51 @@ export class WebhookEventProcessorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly whatsappService: WhatsappService,
+    private readonly inboundMessageService: InboundMessageService,
     private readonly events: EventEmitter2,
-  ) {}
+    @InjectQueue(WEBHOOK_EVENT_PROCESS_QUEUE) private readonly processQueue: Queue,
+  ) {
+    // BullMQ's Queue extends Node's EventEmitter and re-emits its
+    // underlying ioredis connection's 'error' events on itself. An
+    // EventEmitter that emits 'error' with zero listeners attached throws
+    // that error as an UNCAUGHT EXCEPTION (standard Node.js EventEmitter
+    // behavior, not a BullMQ quirk) — this queue backs acceptOnce() below,
+    // which is on the hot path for every webhook request, so this was the
+    // actual root cause of the burst test's intermittent
+    // "Connection is closed." / ECONNRESET failures: under light load a
+    // transient Redis blip is rare enough this never surfaced, but under
+    // 150 concurrent requests it's far more likely, and the resulting
+    // uncaught exception destabilizes the shared connection for other
+    // in-flight .add() calls, not just the one that hit the blip.
+    this.processQueue.on('error', (error) =>
+      this.logger.error(`WEBHOOK_EVENT_PROCESS_QUEUE connection error: ${error.message}`, error.stack),
+    );
+  }
 
   /**
-   * Persists a WebhookEvent row keyed on (provider, externalEventId) before
-   * running `handler`, so a duplicate delivery of the same sub-event is
-   * detected and skipped instead of reprocessed. The insert (not a
-   * check-then-insert) is what makes this race-safe under concurrent
-   * duplicate deliveries — the database's unique constraint is the actual
-   * source of truth, this code just reacts to whether it succeeded.
+   * Persists a WebhookEvent row keyed on (provider, externalEventId) — the
+   * insert (not a check-then-insert) is what makes this race-safe under
+   * concurrent duplicate deliveries, since the database's unique
+   * constraint is the actual source of truth — then enqueues the actual
+   * business-logic dispatch onto a BullMQ worker rather than running it
+   * inline.
    *
-   * Moved here unchanged from the Phase B webhook controller so the retry
-   * mechanism (below) can share it rather than duplicating this logic.
+   * This split is the fix for a real production risk under Meta delivery
+   * bursts: the previous version ran the full handler (which can cascade
+   * into further DB work — status updates, and via EventEmitter2's
+   * synchronous dispatch, whatever the automation engine's
+   * @OnEvent('whatsapp.inbound_message') listener does) synchronously
+   * inside the HTTP request, holding a database connection-pool slot for
+   * the whole chain. Under concurrent load with a small pool (Prisma's
+   * default is `num_cpus * 2 + 1` — as low as 3 on a single-core host),
+   * that serializes bursts badly enough to time out or reset connections.
+   * Now the request path only ever does one fast INSERT before responding.
    */
-  async processOnce(
+  async acceptOnce(
     eventType: string,
     externalEventId: string,
     payload: unknown,
-    handler: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<{ id: string } | undefined> {
     let event: { id: string } | undefined;
     try {
       event = await this.prisma.webhookEvent.create({
@@ -48,39 +77,34 @@ export class WebhookEventProcessorService {
           status: WEBHOOK_EVENT_STATUS.RECEIVED,
         },
       });
+      this.logger.log(`acceptOnce created webhookEvent id=${event.id} for ${eventType}/${externalEventId}`);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         this.logger.log(`Duplicate webhook event skipped: ${eventType}/${externalEventId}`);
-        return;
+        return undefined;
       }
       // A transient failure right here (e.g. a brief DB blip) is the worst
       // case: the event was never persisted at all, so there's nothing for
-      // the retry tick below to find later. A few quick, immediate retries
-      // with short backoff catch most of these without needing the full
-      // async retry mechanism for what's usually a sub-second hiccup.
+      // the retry tick to find later. A few quick, immediate retries with
+      // short backoff catch most of these without needing the full async
+      // retry mechanism for what's usually a sub-second hiccup.
       event = await this.retryCreateOnTransientFailure(eventType, externalEventId, payload, error as Error);
-      if (!event) return;
+      if (!event) return undefined;
     }
 
     // Guaranteed non-undefined past this point: the only path that leaves
     // `event` unset also returns early, above. Re-asserted explicitly here
     // (rather than relying on control-flow narrowing across the try/catch)
     // so the rest of this method reads simply.
-    if (!event) return;
+    if (!event) return undefined;
 
-    try {
-      await handler();
-      await this.prisma.webhookEvent.update({
-        where: { id: event.id },
-        data: { status: WEBHOOK_EVENT_STATUS.PROCESSED, processedAt: new Date() },
-      });
-    } catch (error) {
-      await this.prisma.webhookEvent.update({
-        where: { id: event.id },
-        data: { status: WEBHOOK_EVENT_STATUS.FAILED, error: (error as Error).message },
-      });
-      this.logger.error(`Webhook event handler failed: ${eventType}/${externalEventId}`, error as Error);
-    }
+    await this.processQueue.add(
+      'process',
+      { eventId: event.id },
+      { attempts: 1, removeOnComplete: true, removeOnFail: 100 },
+    );
+
+    return event;
   }
 
   private async retryCreateOnTransientFailure(
@@ -119,6 +143,38 @@ export class WebhookEventProcessorService {
   }
 
   /**
+   * Runs the actual business logic for one already-persisted event and
+   * updates its status accordingly. Called by WebhookEventDispatchProcessor
+   * immediately after a live webhook accepts an event (the normal path),
+   * and reused by retryFailedEvents below for events that failed and are
+   * being tried again later.
+   */
+  async processEvent(eventId: string): Promise<void> {
+    const event = await this.prisma.webhookEvent.findUnique({ where: { id: eventId } });
+    if (!event) {
+      this.logger.warn(`processEvent called for unknown webhook event id ${eventId}`);
+      return;
+    }
+
+    this.logger.log(`processEvent starting for ${event.eventType}/${event.externalEventId}, payload keys: ${Object.keys(event.payload || {})}`);
+    try {
+      await this.dispatchByEventType(event.eventType, event.payload);
+      await this.prisma.webhookEvent.update({
+        where: { id: eventId },
+        data: { status: WEBHOOK_EVENT_STATUS.PROCESSED, processedAt: new Date() },
+      });
+      this.logger.log(`processEvent completed for ${event.eventType}/${event.externalEventId}`);
+    } catch (error) {
+      this.logger.error(`processEvent caught error for ${event.eventType}/${event.externalEventId}: ${(error as Error).message}`);
+      await this.prisma.webhookEvent.update({
+        where: { id: eventId },
+        data: { status: WEBHOOK_EVENT_STATUS.FAILED, error: (error as Error).message },
+      });
+      this.logger.error(`Webhook event handler failed: ${event.eventType}/${event.externalEventId}`, error as Error);
+    }
+  }
+
+  /**
    * Re-runs the same business logic a live webhook delivery would have
    * run, from the persisted payload alone. This is what actually makes an
    * event recoverable rather than just recorded-as-failed: the full
@@ -126,6 +182,7 @@ export class WebhookEventProcessorService {
    * later retry never needs the original HTTP request.
    */
   async dispatchByEventType(eventType: string, payload: any): Promise<void> {
+    this.logger.log(`dispatchByEventType called: eventType=${eventType}, payload keys: ${Object.keys(payload || {})}`);
     switch (eventType) {
       case 'message_status':
         await this.whatsappService.applyStatusUpdate(payload.id, payload.status);
@@ -140,15 +197,9 @@ export class WebhookEventProcessorService {
         return;
 
       case 'inbound_message':
-        this.logger.log(`Inbound WhatsApp message from ${payload.from}: ${payload.type}`);
-        this.events.emit('whatsapp.inbound_message', {
-          // Stored alongside the raw Meta message object at receipt time
-          // specifically so retries have it — it's not part of Meta's own
-          // per-message payload, only the surrounding webhook envelope.
-          phoneNumberId: payload._phoneNumberId,
-          from: payload.from,
-          text: payload.text?.body ?? '',
-        });
+        this.logger.log(`dispatchByEventType: calling inboundMessageService.handle for waMessageId=${payload.id}`);
+        await this.inboundMessageService.handle(payload);
+        this.logger.log(`dispatchByEventType: inboundMessageService.handle returned`);
         return;
 
       default:

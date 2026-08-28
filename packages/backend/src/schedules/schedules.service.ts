@@ -18,7 +18,17 @@ export class SchedulesService {
     private readonly prisma: PrismaService,
     private readonly audienceResolver: AudienceResolverService,
     @InjectQueue(MESSAGE_DISPATCH_QUEUE) private readonly dispatchQueue: Queue,
-  ) {}
+  ) {
+    // BullMQ's Queue extends Node's EventEmitter and re-emits its
+    // underlying ioredis connection's 'error' events on itself. An
+    // EventEmitter that emits 'error' with zero listeners attached throws
+    // that error as an uncaught exception (standard Node.js behavior, not
+    // BullMQ-specific) — under light load a transient Redis blip is rare
+    // enough this never surfaced, but under concurrent burst traffic it's
+    // far more likely, and an uncaught exception here can destabilize the
+    // shared connection for other in-flight commands, not just this one.
+    this.dispatchQueue.on('error', (error) => this.logger.error(`MESSAGE_DISPATCH_QUEUE connection error: ${error.message}`, error.stack));
+  }
 
   list(organizationId: string) {
     return this.prisma.schedule.findMany({

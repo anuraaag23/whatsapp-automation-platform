@@ -1,4 +1,4 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Module, OnModuleInit, Logger } from '@nestjs/common';
 import { BullModule, InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { AutomationsService } from './automations.service';
@@ -31,7 +31,14 @@ import { ContactsModule } from '../contacts/contacts.module';
   exports: [AutomationsService],
 })
 export class AutomationsModule implements OnModuleInit {
-  constructor(@InjectQueue(AUTOMATION_SCHEDULE_TICK_QUEUE) private readonly tickQueue: Queue) {}
+  private readonly logger = new Logger(AutomationsModule.name);
+
+  constructor(@InjectQueue(AUTOMATION_SCHEDULE_TICK_QUEUE) private readonly tickQueue: Queue) {
+    // See SchedulesService's constructor for why this listener is required
+    // — an unhandled 'error' event on a BullMQ Queue is a Node.js
+    // uncaught exception, not a caught/logged error.
+    this.tickQueue.on('error', (error) => this.logger.error(`AUTOMATION_SCHEDULE_TICK_QUEUE connection error: ${error.message}`, error.stack));
+  }
 
   /** Registers the repeatable job that checks SCHEDULE-triggered automations. Widened from 60s to 5min — see schedules.module.ts for why. */
   async onModuleInit() {

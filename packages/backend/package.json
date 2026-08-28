@@ -14,7 +14,7 @@
     "prisma:seed": "ts-node --transpile-only -P prisma/tsconfig.seed.json prisma/seed.ts",
     "test": "jest",
     "pretest:e2e": "prisma migrate deploy",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
   },
   "dependencies": {
     "@nestjs/bullmq": "^10.2.0",
@@ -29,7 +29,7 @@
     "@nestjs/platform-socket.io": "^10.4.0",
     "@nestjs/throttler": "^6.2.1",
     "@nestjs/websockets": "^10.4.0",
-    "@prisma/client": "5.22.0",
+    "@prisma/client": "^5.20.0",
     "argon2": "^0.41.1",
     "axios": "^1.7.7",
     "bullmq": "^5.13.2",
@@ -61,7 +61,7 @@
     "@typescript-eslint/parser": "^8.5.0",
     "eslint": "^8.57.1",
     "jest": "^29.7.0",
-    "prisma": "5.22.0",
+    "prisma": "^5.20.0",
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",
     "ts-node": "^10.9.2",

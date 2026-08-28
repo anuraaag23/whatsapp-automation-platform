@@ -1,4 +1,4 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { MESSAGE_TYPE } from '../common/constants/prisma-enums.constants';
@@ -26,6 +26,15 @@ export class MessageDispatchProcessor extends WorkerHost {
     private readonly campaignsService: CampaignsService,
   ) {
     super();
+  }
+
+  // A BullMQ Worker extends Node's EventEmitter; an 'error' event emitted
+  // with no listener attached is thrown as an uncaught exception (see
+  // WebhookEventProcessorService's constructor for the full explanation —
+  // this is the Worker-side counterpart of the same gap on the Queue side).
+  @OnWorkerEvent('error')
+  onError(error: Error) {
+    this.logger.error(`MessageDispatchProcessor worker error: ${error.message}`, error.stack);
   }
 
   async process(job: Job<DispatchJobData>): Promise<void> {
