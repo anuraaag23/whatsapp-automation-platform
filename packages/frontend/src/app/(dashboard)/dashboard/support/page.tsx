@@ -1,7 +1,9 @@
 'use client';
 
-import { LifeBuoy, Mail, Github } from 'lucide-react';
+import { LifeBuoy, Mail, Github, ExternalLink } from 'lucide-react';
 import { GlassCard, GlassButton } from '@/components/glass';
+
+const GITHUB_REPO_URL = 'https://github.com/anuraaag23/whatsapp-automation-platform.git';
 
 export default function SupportPage() {
   return (
@@ -33,10 +35,23 @@ export default function SupportPage() {
             wa.automation.support@gmail.com
           </GlassButton>
         </GlassCard>
-        <GlassCard variant="lite" icon={<Github size={18} />} title="Repository" subtitle="Report a bug or request a feature">
-          <p className="text-sm text-deep-navy/50 dark:text-white/40">
-            Add your repository link here once the project is hosted on GitHub.
+        <GlassCard
+          variant="lite"
+          icon={<Github size={18} />}
+          title="GitHub Repository"
+          subtitle="Source, issues, and development"
+        >
+          <p className="mb-3 text-sm text-deep-navy/60 dark:text-white/50">
+            Browse the source, report a bug, or open a pull request.
           </p>
+          <GlassButton
+            variant="primary"
+            size="sm"
+            icon={<ExternalLink size={14} />}
+            onClick={() => window.open(GITHUB_REPO_URL, '_blank', 'noopener,noreferrer')}
+          >
+            Open Repository
+          </GlassButton>
         </GlassCard>
       </div>
     </div>

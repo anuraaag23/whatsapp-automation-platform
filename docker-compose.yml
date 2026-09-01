@@ -52,10 +52,6 @@ services:
     # internal Compose network (service name "backend"). Only Caddy publishes
     # ports to the host. For local dev without Caddy, temporarily add back
     # "3001:3001" or run: docker compose exec backend sh.
-    # No public port here on purpose — Caddy reaches this container over the
-    # internal Compose network (service name "backend"). Only Caddy publishes
-    # ports to the host. For local dev without Caddy, temporarily add back
-    # "3001:3001" or run: docker compose exec backend sh.
     depends_on:
       postgres:
         condition: service_healthy

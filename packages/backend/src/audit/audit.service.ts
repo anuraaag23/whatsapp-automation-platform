@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface AuditLogFilters {
@@ -11,9 +12,49 @@ export interface AuditLogFilters {
   pageSize?: number;
 }
 
+export interface RecordAuditEntryInput {
+  organizationId: string;
+  userId?: string | null;
+  action: string;
+  entityType: string;
+  entityId?: string | null;
+  status?: 'success' | 'failure';
+  metadata?: Record<string, unknown>;
+  device?: string | null;
+  ipAddress?: string | null;
+}
+
 @Injectable()
 export class AuditService {
+  private readonly logger = new Logger(AuditService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Writes a single audit entry. Deliberately swallows its own errors —
+   * audit logging must never break the mutation it's recording. Callers
+   * fire-and-forget this (no await required, but awaiting is safe too).
+   */
+  async record(input: RecordAuditEntryInput): Promise<void> {
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          organizationId: input.organizationId,
+          userId: input.userId ?? undefined,
+          action: input.action,
+          entityType: input.entityType,
+          entityId: input.entityId ?? undefined,
+          status: input.status ?? 'success',
+          metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
+          device: input.device ?? undefined,
+          ipAddress: input.ipAddress ?? undefined,
+        },
+      });
+    } catch (err) {
+      // Never let audit-logging failures break the underlying request.
+      this.logger.error('Failed to record audit entry', err instanceof Error ? err.stack : err);
+    }
+  }
 
   async list(organizationId: string, filters: AuditLogFilters) {
     const page = Math.max(filters.page ?? 1, 1);
