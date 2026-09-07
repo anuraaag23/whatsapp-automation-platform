@@ -4,6 +4,7 @@ import { useState } from 'react';
 import {
   LayoutDashboard,
   MessageSquare,
+  MessagesSquare,
   CalendarClock,
   Megaphone,
   Workflow,
@@ -29,6 +30,7 @@ import { AuthInitializer } from '@/components/AuthInitializer';
 
 const NAV_ITEMS: SidebarItem[] = [
   { label: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard size={18} /> },
+  { label: 'Conversations', href: '/dashboard/conversations', icon: <MessagesSquare size={18} /> },
   { label: 'Messages', href: '/dashboard/messages', icon: <MessageSquare size={18} /> },
   { label: 'Schedules', href: '/dashboard/schedules', icon: <CalendarClock size={18} /> },
   { label: 'Campaigns', href: '/dashboard/campaigns', icon: <Megaphone size={18} /> },

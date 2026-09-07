@@ -30,6 +30,7 @@ export function useMessages(status?: string) {
       });
       return data;
     },
+    refetchInterval: 5000,
   });
 }
 

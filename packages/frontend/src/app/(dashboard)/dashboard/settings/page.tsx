@@ -58,6 +58,7 @@ export default function SettingsPage() {
   const revokeInvite = useRevokeInvite();
   const [inviteForm, setInviteForm] = useState<{ email: string; role: Role }>({ email: '', role: 'VIEWER' });
 
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [waForm, setWaForm] = useState({
     businessAccountId: '',
     phoneNumberId: '',
@@ -70,8 +71,16 @@ export default function SettingsPage() {
 
   async function handleConnect(e: React.FormEvent) {
     e.preventDefault();
-    await connectWhatsapp.mutateAsync(waForm);
-    setWaForm({ businessAccountId: '', phoneNumberId: '', displayPhoneNumber: '', accessToken: '' });
+    setConnectError(null);
+    try {
+      await connectWhatsapp.mutateAsync(waForm);
+      setWaForm({ businessAccountId: '', phoneNumberId: '', displayPhoneNumber: '', accessToken: '' });
+    } catch (err: any) {
+      setConnectError(
+        err?.response?.data?.message ??
+          'Failed to connect WhatsApp account. Please verify the credentials and ensure you are an Owner/Admin.',
+      );
+    }
   }
 
   async function handleCreateKey(e: React.FormEvent) {
@@ -195,6 +204,7 @@ export default function SettingsPage() {
               onChange={(e) => setWaForm({ ...waForm, accessToken: e.target.value })}
               className={inputClass}
             />
+            {connectError && <p className="text-xs text-danger">{connectError}</p>}
             <GlassButton type="submit" loading={connectWhatsapp.isPending} className="w-fit">
               Connect Account
             </GlassButton>
