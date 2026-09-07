@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@/store/auth-store';
+import { setSessionCookie, clearSessionCookie } from '@/lib/session-cookie';
 
 // When NEXT_PUBLIC_API_URL is unset, requests go to a relative path
 // (same origin as whatever URL the browser is actually using — localhost,
@@ -34,9 +35,11 @@ export async function refreshAccessToken(): Promise<string | null> {
     );
     const token = res.data.accessToken as string;
     useAuthStore.getState().setAccessToken(token);
+    setSessionCookie();
     return token;
   } catch {
     useAuthStore.getState().clear();
+    clearSessionCookie();
     return null;
   }
 }
@@ -56,6 +59,16 @@ apiClient.interceptors.response.use(
         original.headers = original.headers ?? {};
         original.headers.Authorization = `Bearer ${newToken}`;
         return apiClient(original);
+      } else {
+        clearSessionCookie();
+        useAuthStore.getState().clear();
+        if (typeof window !== 'undefined') {
+          const path = window.location.pathname;
+          if (path.startsWith('/dashboard') || path.startsWith('/super-admin')) {
+            const dest = encodeURIComponent(window.location.pathname + window.location.search);
+            window.location.href = `/login?from=${dest}`;
+          }
+        }
       }
     }
 

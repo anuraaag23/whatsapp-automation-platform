@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { GlassPanel, GlassButton } from '@/components/glass';
 import { apiClient } from '@/lib/api-client';
 import { useAuthStore } from '@/store/auth-store';
+import { setSessionCookie } from '@/lib/session-cookie';
 
 const inputClass =
   'w-full bg-transparent text-sm outline-none placeholder:text-deep-navy/30 dark:placeholder:text-white/30';
@@ -19,6 +20,15 @@ function RegisterForm() {
   const inviteToken = searchParams.get('invite');
   const setAccessToken = useAuthStore((s) => s.setAccessToken);
   const setUser = useAuthStore((s) => s.setUser);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const user = useAuthStore((s) => s.user);
+
+  // If already authenticated, redirect to dashboard
+  useEffect(() => {
+    if (accessToken && user) {
+      router.replace('/dashboard');
+    }
+  }, [accessToken, user, router]);
 
   const [invitePreview, setInvitePreview] = useState<{ email: string; organizationName: string; role: string } | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -59,6 +69,7 @@ function RegisterForm() {
         ...(inviteToken ? { inviteToken } : { organizationName: form.organizationName }),
       });
       setAccessToken(res.data.accessToken);
+      setSessionCookie();
 
       const me = await apiClient.get('/auth/me');
       setUser(me.data);

@@ -7,6 +7,7 @@ import { LogOut, ChevronDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { apiClient } from '@/lib/api-client';
 import { useAuthStore } from '@/store/auth-store';
+import { clearSessionCookie } from '@/lib/session-cookie';
 
 /**
  * Same fix as NotificationsBell/GlassSelect/OrgSwitcher: UserMenu is mounted
@@ -78,6 +79,7 @@ export function UserMenu() {
     } catch {
       // Ignore — proceed with local logout regardless.
     } finally {
+      clearSessionCookie();
       clear();
       router.push('/login');
     }

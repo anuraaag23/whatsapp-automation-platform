@@ -1,51 +1,83 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
 import { refreshAccessToken } from '@/lib/api-client';
 import { useAuthStore } from '@/store/auth-store';
+import { setSessionCookie, clearSessionCookie } from '@/lib/session-cookie';
 
 /**
- * Runs once when the dashboard mounts. Access tokens live in memory only
- * (by design — nothing auth-related sits in localStorage), so on every
- * fresh page load every dashboard query would otherwise fire with no
- * token, get a 401, and only succeed on the automatic retry that
- * api-client's response interceptor triggers. That's not broken — it
- * works — but it means every page load shows a burst of 401s in the
- * Network tab before things settle.
- *
- * This does the same silent refresh proactively, once, up front, so by
- * the time the dashboard's actual data hooks run they already have a
- * valid token and skip the fail-then-retry round trip entirely.
+ * Proactively verifies and restores the user session on load, or immediately
+ * redirects unauthenticated users to /login without flashing protected UI.
  */
 export function AuthInitializer({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+
   const authInitialized = useAuthStore((s) => s.authInitialized);
   const setAuthInitialized = useAuthStore((s) => s.setAuthInitialized);
   const accessToken = useAuthStore((s) => s.accessToken);
+  const [redirecting, setRedirecting] = useState(false);
 
   useEffect(() => {
-    if (authInitialized) return;
+    if (authInitialized && accessToken) {
+      setSessionCookie();
+      return;
+    }
 
     if (accessToken) {
-      // Already have one (e.g. arrived here right after login, same SPA
-      // session) — nothing to refresh, just mark ready.
+      setSessionCookie();
       setAuthInitialized(true);
       return;
     }
 
-    refreshAccessToken().finally(() => setAuthInitialized(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let isMounted = true;
 
-  if (!authInitialized) {
-    // Brief and unstyled on purpose — this is normally on screen for
-    // well under a second (one network round trip), not worth a full
-    // branded loading state.
+    async function initAuth() {
+      try {
+        const token = await refreshAccessToken();
+        if (!isMounted) return;
+
+        if (token) {
+          setSessionCookie();
+          setAuthInitialized(true);
+        } else {
+          // Refresh failed — clear credentials and redirect to login
+          clearSessionCookie();
+          setRedirecting(true);
+          const search = typeof window !== 'undefined' ? window.location.search : '';
+          const target = `${pathname || '/dashboard'}${search}`;
+          router.replace(`/login?from=${encodeURIComponent(target)}`);
+        }
+      } catch {
+        if (!isMounted) return;
+        clearSessionCookie();
+        setRedirecting(true);
+        const search = typeof window !== 'undefined' ? window.location.search : '';
+        const target = `${pathname || '/dashboard'}${search}`;
+        router.replace(`/login?from=${encodeURIComponent(target)}`);
+      }
+    }
+
+    initAuth();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authInitialized, accessToken, pathname, router, setAuthInitialized]);
+
+  // If not yet initialized or redirecting, NEVER render children (zero UI flash)
+  if (!authInitialized || !accessToken || redirecting) {
     return (
       <div className="flex h-dvh items-center justify-center text-sm text-deep-navy/40 dark:text-white/30">
-        Loading…
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-electric border-t-transparent" />
+          <p>Loading…</p>
+        </div>
       </div>
     );
   }
 
   return <>{children}</>;
 }
+

@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto/crypto.service';
 import { WhatsappClient } from '../whatsapp/whatsapp.client';
+import { InboundMessageService } from '../whatsapp/inbound-message.service';
 import { ConnectWhatsappAccountDto } from './dto/connect-whatsapp-account.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { UpdateNotificationSettingsDto } from './dto/update-notification-settings.dto';
@@ -13,6 +14,7 @@ export class SettingsService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly whatsappClient: WhatsappClient,
+    private readonly inboundMessageService: InboundMessageService,
   ) {}
 
   getOrganization(organizationId: string) {
@@ -51,29 +53,40 @@ export class SettingsService {
   }
 
   async connectWhatsappAccount(organizationId: string, dto: ConnectWhatsappAccountDto) {
-    const accessTokenCiphertext = this.crypto.encrypt(dto.accessToken);
+    const businessAccountId = dto.businessAccountId.trim();
+    const phoneNumberId = dto.phoneNumberId.trim();
+    const displayPhoneNumber = dto.displayPhoneNumber.trim();
+    const accessToken = dto.accessToken.trim();
+    const accessTokenCiphertext = this.crypto.encrypt(accessToken);
 
     const account = await this.prisma.whatsappAccount.upsert({
       where: { organizationId },
       create: {
         organizationId,
-        businessAccountId: dto.businessAccountId,
-        phoneNumberId: dto.phoneNumberId,
-        displayPhoneNumber: dto.displayPhoneNumber,
+        businessAccountId,
+        phoneNumberId,
+        displayPhoneNumber,
         accessTokenCiphertext,
         webhookVerifyToken: crypto.randomBytes(24).toString('hex'),
-        apiVersion: dto.apiVersion ?? 'v20.0',
+        apiVersion: dto.apiVersion?.trim() || 'v20.0',
         status: 'connected',
       },
       update: {
-        businessAccountId: dto.businessAccountId,
-        phoneNumberId: dto.phoneNumberId,
-        displayPhoneNumber: dto.displayPhoneNumber,
+        businessAccountId,
+        phoneNumberId,
+        displayPhoneNumber,
         accessTokenCiphertext,
-        apiVersion: dto.apiVersion ?? 'v20.0',
+        apiVersion: dto.apiVersion?.trim() || 'v20.0',
         status: 'connected',
       },
     });
+
+    // Proactively reprocess any pending or previously unassigned inbound messages
+    try {
+      await this.inboundMessageService.reprocessUnassignedInboundMessages();
+    } catch {
+      // Best-effort; do not fail the connection if reprocessing hits a non-critical error
+    }
 
     const { accessTokenCiphertext: _omit, ...safe } = account;
     return { ...safe, hasAccessToken: true };

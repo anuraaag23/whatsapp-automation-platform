@@ -100,6 +100,7 @@ export function useConversations(filters: ConversationListFilters = {}) {
       return data;
     },
     refetchInterval: 4000,
+    placeholderData: (previousData) => previousData,
   });
 }
 

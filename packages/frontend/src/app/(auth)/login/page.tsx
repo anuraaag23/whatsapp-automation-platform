@@ -1,23 +1,37 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { FormEvent, Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
 import Image from 'next/image';
 import { GlassPanel, GlassButton } from '@/components/glass';
 import { apiClient } from '@/lib/api-client';
 import { useAuthStore } from '@/store/auth-store';
+import { setSessionCookie } from '@/lib/session-cookie';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const from = searchParams.get('from');
+  const destination = from && from.startsWith('/') && !from.startsWith('//') ? from : '/dashboard';
+
   const setAccessToken = useAuthStore((s) => s.setAccessToken);
   const setUser = useAuthStore((s) => s.setUser);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const user = useAuthStore((s) => s.user);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // If already authenticated, smoothly forward to intended destination
+  useEffect(() => {
+    if (accessToken && user) {
+      router.replace(destination);
+    }
+  }, [accessToken, user, destination, router]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -27,11 +41,12 @@ export default function LoginPage() {
     try {
       const res = await apiClient.post('/auth/login', { email, password });
       setAccessToken(res.data.accessToken);
+      setSessionCookie();
 
       const me = await apiClient.get('/auth/me');
       setUser(me.data);
 
-      router.push('/dashboard');
+      router.push(destination);
     } catch (err: any) {
       setError(err?.response?.data?.message ?? 'Unable to sign in. Please try again.');
     } finally {
@@ -124,5 +139,19 @@ export default function LoginPage() {
         </p>
       </GlassPanel>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center text-sm text-deep-navy/40 dark:text-white/30">
+          Loading…
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

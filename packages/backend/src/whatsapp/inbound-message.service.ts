@@ -44,16 +44,44 @@ export class InboundMessageService {
    * automation event emission entirely — the first processing already did it.
    */
   async handle(payload: any): Promise<void> {
-    const phoneNumberId: string | undefined = payload._phoneNumberId;
-    if (!phoneNumberId) {
+    const rawPhoneId: string | undefined = payload._phoneNumberId;
+    if (!rawPhoneId) {
       this.logger.warn('Inbound message payload missing _phoneNumberId — cannot resolve organization, dropping');
       return;
     }
+    const phoneNumberId = String(rawPhoneId).trim();
 
     // The organization boundary for an inbound message is derived ONLY
     // from which of OUR phone numbers received it — never from anything
     // in the payload the sender controls.
-    const account = await this.prisma.whatsappAccount.findFirst({ where: { phoneNumberId } });
+    let account = await this.prisma.whatsappAccount.findFirst({
+      where: { phoneNumberId },
+    });
+
+    if (!account && rawPhoneId !== phoneNumberId) {
+      account = await this.prisma.whatsappAccount.findFirst({
+        where: { phoneNumberId: String(rawPhoneId) },
+      });
+    }
+
+    // Strict whitespace-tolerant fallback on phoneNumberId only (never matches WABA ID or displayPhoneNumber
+    // to strictly preserve multi-tenant isolation).
+    if (!account && typeof this.prisma.whatsappAccount.findMany === 'function') {
+      const allAccounts = await this.prisma.whatsappAccount.findMany({
+        orderBy: { updatedAt: 'desc' },
+      });
+      account = allAccounts.find((a) => {
+        if (!a || !a.phoneNumberId) return false;
+        return a.phoneNumberId.trim() === phoneNumberId;
+      }) ?? null;
+
+      if (account) {
+        this.logger.log(
+          `Resolved WhatsApp account via trimmed phoneNumberId fallback for ${phoneNumberId} -> org ${account.organizationId}`,
+        );
+      }
+    }
+
     if (!account) {
       this.logger.warn(`Inbound message for unknown phoneNumberId ${phoneNumberId} — no connected account, dropping`);
       return;
@@ -304,6 +332,40 @@ export class InboundMessageService {
       default:
         return { type: MESSAGE_TYPE.UNKNOWN, content: { rawType: payload.type, raw: payload }, text: '' };
     }
+  }
+
+  /**
+   * Scans existing inbound_message webhook events and re-processes any that
+   * were previously skipped (e.g. because the WhatsApp account had not yet
+   * been connected at the moment the webhook arrived). Idempotency safeguards
+   * ensure no duplicate messages are ever created.
+   */
+  async reprocessUnassignedInboundMessages(): Promise<number> {
+    const inboundEvents = await this.prisma.webhookEvent.findMany({
+      where: { eventType: 'inbound_message' },
+      orderBy: { receivedAt: 'asc' },
+    });
+
+    let reprocessed = 0;
+    for (const event of inboundEvents) {
+      const payload = event.payload as any;
+      if (!payload?.id) continue;
+
+      // Check if this waMessageId already exists in any message
+      const existingMessage = await this.prisma.message.findFirst({
+        where: { waMessageId: payload.id },
+      });
+      if (existingMessage) continue;
+
+      try {
+        await this.handle(payload);
+        reprocessed++;
+        this.logger.log(`Reprocessed orphaned inbound message: ${payload.id}`);
+      } catch (err: any) {
+        this.logger.warn(`Could not reprocess inbound message ${payload.id}: ${err.message}`);
+      }
+    }
+    return reprocessed;
   }
 }
 

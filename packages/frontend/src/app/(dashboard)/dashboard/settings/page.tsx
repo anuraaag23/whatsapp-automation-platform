@@ -73,7 +73,12 @@ export default function SettingsPage() {
     e.preventDefault();
     setConnectError(null);
     try {
-      await connectWhatsapp.mutateAsync(waForm);
+      await connectWhatsapp.mutateAsync({
+        businessAccountId: waForm.businessAccountId.trim(),
+        phoneNumberId: waForm.phoneNumberId.trim(),
+        displayPhoneNumber: waForm.displayPhoneNumber.trim(),
+        accessToken: waForm.accessToken.trim(),
+      });
       setWaForm({ businessAccountId: '', phoneNumberId: '', displayPhoneNumber: '', accessToken: '' });
     } catch (err: any) {
       setConnectError(

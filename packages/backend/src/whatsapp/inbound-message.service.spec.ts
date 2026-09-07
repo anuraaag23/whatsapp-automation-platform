@@ -12,6 +12,7 @@ function createPrismaMock() {
   const contacts = new Map<string, any>();
   const conversations = new Map<string, any>();
   const messages = new Map<string, any>();
+  const webhookEvents = new Map<string, any>();
   let seq = 0;
 
   return {
@@ -59,10 +60,18 @@ function createPrismaMock() {
         return merged;
       }),
     },
+    webhookEvent: {
+      findMany: jest.fn(async ({ where }: any) => {
+        return [...webhookEvents.values()].filter(
+          (e) => !where?.eventType || e.eventType === where.eventType,
+        );
+      }),
+    },
     __whatsappAccounts: whatsappAccounts,
     __contacts: contacts,
     __conversations: conversations,
     __messages: messages,
+    __webhookEvents: webhookEvents,
   };
 }
 
@@ -134,6 +143,38 @@ describe('InboundMessageService', () => {
   it('drops the message safely when phoneNumberId matches no connected account', async () => {
     await service.handle(textPayload({ _phoneNumberId: 'unknown_phone' }));
     expect(prismaMock.message.create).not.toHaveBeenCalled();
+  });
+
+  it('correctly handles phoneNumberId with leading or trailing whitespace', async () => {
+    await service.handle(textPayload({ _phoneNumberId: '  phone_abc  ' }));
+    expect(contactsServiceMock.create).toHaveBeenCalledWith(ORG_ID, { phoneNumber: '15550001111' }, undefined, false);
+    expect(prismaMock.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          organizationId: ORG_ID,
+          direction: 'INBOUND',
+          status: 'DELIVERED',
+        }),
+      }),
+    );
+  });
+
+  it('reprocesses orphaned inbound messages from webhookEvent table', async () => {
+    prismaMock.__webhookEvents.set('ev_1', {
+      id: 'ev_1',
+      eventType: 'inbound_message',
+      payload: textPayload({ id: 'orphaned_msg_1', _phoneNumberId: 'phone_abc' }),
+    });
+
+    const reprocessed = await service.reprocessUnassignedInboundMessages();
+    expect(reprocessed).toBe(1);
+    expect(prismaMock.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          waMessageId: 'orphaned_msg_1',
+        }),
+      }),
+    );
   });
 
   it('creates a new contact via ContactsService (not a second implementation) for a first-time sender', async () => {

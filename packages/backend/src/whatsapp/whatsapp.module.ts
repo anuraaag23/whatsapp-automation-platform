@@ -54,7 +54,7 @@ import { QuotaModule } from '../quota/quota.module';
     MessageRetryService,
     MessageRetryProcessor,
   ],
-  exports: [WhatsappService, WhatsappClient],
+  exports: [WhatsappService, WhatsappClient, InboundMessageService, WebhookEventProcessorService],
 })
 export class WhatsappModule implements OnModuleInit {
   private readonly logger = new Logger(WhatsappModule.name);
