@@ -12,6 +12,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node --transpile-only -P prisma/tsconfig.seed.json prisma/seed.ts",
+    "super-admin:grant": "ts-node --transpile-only -P prisma/tsconfig.seed.json prisma/grant-super-admin.ts",
     "test": "jest",
     "pretest:e2e": "prisma migrate deploy",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"

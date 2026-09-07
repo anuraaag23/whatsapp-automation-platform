@@ -93,6 +93,54 @@ export class AuditService {
     };
   }
 
+  /**
+   * Cross-organization variant of list(), for the Super Admin audit view
+   * only — organizationId is optional here (omit to see every org) rather
+   * than mandatory, which is exactly the distinction that makes this
+   * platform-level: every call site must go through a route protected by
+   * SuperAdminGuard, since nothing here re-derives organizationId from the
+   * caller's own membership the way every other org-scoped query in this
+   * codebase does.
+   */
+  async listGlobal(filters: AuditLogFilters & { organizationId?: string }) {
+    const page = Math.max(filters.page ?? 1, 1);
+    const pageSize = Math.min(Math.max(filters.pageSize ?? 25, 1), 100);
+
+    const where: Record<string, unknown> = {};
+    if (filters.organizationId) where.organizationId = filters.organizationId;
+    if (filters.action) where.action = { contains: filters.action, mode: 'insensitive' };
+    if (filters.entityType) where.entityType = filters.entityType;
+    if (filters.userId) where.userId = filters.userId;
+    if (filters.from || filters.to) {
+      where.createdAt = {
+        ...(filters.from ? { gte: new Date(filters.from) } : {}),
+        ...(filters.to ? { lte: new Date(filters.to) } : {}),
+      };
+    }
+
+    const [entries, total] = await this.prisma.$transaction([
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          user: { select: { id: true, firstName: true, lastName: true, email: true } },
+          organization: { select: { id: true, name: true, slug: true } },
+        },
+      }),
+      this.prisma.auditLog.count({ where }),
+    ]);
+
+    return {
+      entries,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(Math.ceil(total / pageSize), 1),
+    };
+  }
+
   /** Distinct action/entityType values seen for this org, to drive filter dropdowns. */
   async listFilterOptions(organizationId: string) {
     const [actions, entityTypes] = await Promise.all([

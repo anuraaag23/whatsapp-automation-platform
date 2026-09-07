@@ -64,8 +64,8 @@ process.env.SECRETS_ENCRYPTION_KEY = 'e2e_test_secrets_encryption_key__do_not_us
  * developer might actually be looking at. See TEST_DATABASE_REPORT.md for
  * the one-time setup command to create this database.
  */
-process.env.DATABASE_URL = 'postgresql://waplatform:change_me@127.0.0.1:5433/waplatform_test?schema=public';
-process.env.DIRECT_DATABASE_URL = 'postgresql://waplatform:change_me@127.0.0.1:5433/waplatform_test?schema=public';
+process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://waplatform:change_me@127.0.0.1:15432/waplatform_test?schema=public';
+process.env.DIRECT_DATABASE_URL = process.env.DIRECT_DATABASE_URL || 'postgresql://waplatform:change_me@127.0.0.1:15432/waplatform_test?schema=public';
 
 /**
  * BullMQ e2e tests run against the project's real docker-compose Redis

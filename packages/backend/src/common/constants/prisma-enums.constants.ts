@@ -102,6 +102,19 @@ export const AUTOMATION_STATUS = {
   PAUSED: 'PAUSED',
 } as const;
 
+export const AUTOMATION_RUN_STATUS = {
+  RUNNING: 'RUNNING',
+  WAITING_FOR_REPLY: 'WAITING_FOR_REPLY',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+} as const;
+
+/** Platform-level org status set by Super Admin actions — see super-admin/. Independent of AUTOMATION_STATUS etc. above, which are all org-scoped feature enums. */
+export const ORGANIZATION_STATUS = {
+  ACTIVE: 'ACTIVE',
+  SUSPENDED: 'SUSPENDED',
+} as const;
+
 export const NOTIFICATION_CHANNEL = {
   DESKTOP: 'DESKTOP',
   EMAIL: 'EMAIL',

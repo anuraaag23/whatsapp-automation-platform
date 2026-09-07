@@ -31,6 +31,23 @@ model Organization {
   timezone  String   @default("UTC")
   language  String   @default("en")
   theme     Theme    @default(AUTO)
+  // Platform-level (Super Admin) status — independent of anything an
+  // organization's own members can set themselves. SUSPENDED blocks login
+  // for that org's users (see AuthService) without touching any of their
+  // data. Defaulting to ACTIVE preserves every existing organization's
+  // current (working) behavior with no backfill needed.
+  status    OrganizationStatus @default(ACTIVE)
+  suspendedAt DateTime?
+  suspendedReason String?
+  // Nullable and NOT auto-assigned to existing or new organizations by this
+  // migration — see Plan model's doc comment for why. An org with no plan
+  // and no OrganizationQuotaOverride is unlimited on every resource, which
+  // is what every organization already effectively has today; assigning
+  // limits is something a Super Admin opts an org into going forward, not
+  // something this migration silently imposes on anyone.
+  planId    String?
+  plan      Plan?    @relation(fields: [planId], references: [id])
+  quotaOverride OrganizationQuotaOverride?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -52,7 +69,9 @@ model Organization {
   conversations      Conversation[]
   notificationSettings NotificationSettings?
   groups             ContactGroup[]
+  consentEvents      ContactConsentEvent[]
 
+  @@index([status])
   @@map("organizations")
 }
 
@@ -60,6 +79,11 @@ enum Theme {
   LIGHT
   DARK
   AUTO
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
 }
 
 enum Role {
@@ -81,6 +105,13 @@ model User {
   isActive       Boolean  @default(true)
   emailVerified  Boolean  @default(false)
   emailVerifiedAt DateTime?
+  // Platform-level flag, deliberately independent of the org-scoped Role/
+  // OrganizationMember system (a user can be SUPER_ADMIN regardless of
+  // which role they hold in whichever organization their JWT is currently
+  // scoped to, and regardless of org membership at all). There is no API
+  // path that sets this — see prisma/scripts/grant-super-admin.ts for the
+  // one controlled, manual way to flip it.
+  isSuperAdmin   Boolean  @default(false)
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -234,6 +265,7 @@ model Contact {
   messages       Message[]
   campaignRecipients CampaignRecipient[]
   conversations  Conversation[]
+  consentEvents  ContactConsentEvent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -247,6 +279,51 @@ enum OptInStatus {
   PENDING
   OPTED_IN
   OPTED_OUT
+}
+
+// ---------------------------------------------------------------------------
+// Consent history (append-only) — records every opt-in/opt-out transition
+// for a contact, independent of the current-state snapshot already kept on
+// Contact.optInStatus/optInAt/optOutAt. That snapshot answers "what's the
+// contact's status right now"; this answers "prove how it got there and
+// when" — the question a compliance review or a support ticket ("why did
+// we message/not message this person") actually needs answered, and one
+// the snapshot alone can't reconstruct once a second transition overwrites
+// optInAt/optOutAt.
+// ---------------------------------------------------------------------------
+
+model ContactConsentEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contactId      String
+  contact        Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  action         ConsentAction
+  source         ConsentSource
+  /// Free-text detail: the matched keyword for INBOUND_KEYWORD, an optional
+  /// operator-entered note for MANUAL, etc. Never the full inbound message
+  /// body — only the specific token that triggered the transition.
+  reason         String?
+  actorUserId    String?
+  metadata       Json     @default("{}")
+
+  createdAt DateTime @default(now())
+
+  @@index([organizationId, contactId, createdAt])
+  @@map("contact_consent_events")
+}
+
+enum ConsentAction {
+  OPT_IN
+  OPT_OUT
+}
+
+enum ConsentSource {
+  MANUAL
+  INBOUND_KEYWORD
+  IMPORT
+  API
 }
 
 model Tag {
@@ -426,6 +503,10 @@ model Message {
   @@index([contactId])
   @@index([campaignId])
   @@index([conversationId, createdAt])
+  // Supports QuotaService's monthly-message-usage count (organizationId +
+  // direction + date range) without a full scan of the org's message
+  // history — see quota.service.ts.
+  @@index([organizationId, direction, createdAt])
   @@map("messages")
 }
 
@@ -697,6 +778,73 @@ enum AutomationTriggerType {
 // Notification channel delivery settings
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Limits & Quotas
+// ---------------------------------------------------------------------------
+
+/// A resource limit of `null` means unlimited for that resource — used both
+/// here (a plan tier that doesn't cap a given resource) and on
+/// OrganizationQuotaOverride (meaning "no override, fall back to the plan").
+/// The effective limit for an organization is always:
+///   quotaOverride.<field> ?? plan?.<field> ?? null (unlimited)
+/// computed in QuotaService, never duplicated into the Organization row
+/// itself — this table is the one place plan limits are defined so five
+/// tiers don't mean five copies of the same numbers pasted around the app.
+///
+/// Seeded with FREE/STARTER/PRO/BUSINESS/CUSTOM (see the super_admin_quotas
+/// migration) so the next phase (Plans management UI) has real rows to
+/// manage rather than needing its own migration first — but nothing in this
+/// phase assigns organizations to a plan automatically; Organization.planId
+/// stays null until a Super Admin explicitly sets it.
+model Plan {
+  id   String @id @default(cuid())
+  key  String @unique
+  name String
+
+  maxUsers                        Int?
+  maxContacts                     Int?
+  maxWhatsappAccounts              Int?
+  maxMessagesPerMonth              Int?
+  maxAutomations                   Int?
+  maxAutomationExecutionsPerMonth  Int?
+  maxApiRequestsPerMonth           Int?
+  maxStorageMb                     Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organizations Organization[]
+
+  @@map("plans")
+}
+
+/// Per-organization override of specific resource limits, set only by a
+/// Super Admin (see super-admin/quotas.*). One row per organization at
+/// most (organizationId is unique). For each field: `null` means "no
+/// override, defer to the plan's value"; `-1` means "explicitly unlimited
+/// for this org regardless of plan"; any other value is the override limit
+/// itself. See QuotaService.resolveEffectiveLimit for the single place this
+/// convention is interpreted.
+model OrganizationQuotaOverride {
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  maxUsers                        Int?
+  maxContacts                     Int?
+  maxWhatsappAccounts              Int?
+  maxMessagesPerMonth              Int?
+  maxAutomations                   Int?
+  maxAutomationExecutionsPerMonth  Int?
+  maxApiRequestsPerMonth           Int?
+  maxStorageMb                     Int?
+
+  updatedAt       DateTime @updatedAt
+  updatedByUserId String?
+
+  @@map("organization_quota_overrides")
+}
+
 model NotificationSettings {
   id             String   @id @default(cuid())
   organizationId String   @unique
@@ -754,15 +902,44 @@ model AutomationRun {
   steps          Json     @default("[]")
   errorMessage   String?
 
+  // --- Wait-for-reply state -------------------------------------------
+  // Populated only while status = WAITING_FOR_REPLY, and left in place
+  // afterwards as a record of how the run got resumed (or timed out).
+  // conversationId is the match key an inbound message is looked up by —
+  // stored directly rather than re-derived from contactId each time,
+  // since it's what InboundMessageService's event already carries.
+  conversationId     String?
+  waitingNodeId      String?
+  waitingSince       DateTime?
+  waitExpiresAt      DateTime?
+  // BullMQ job id for the scheduled timeout continuation, so a reply that
+  // arrives first can cancel it — without this, a stale timeout job would
+  // still fire later and attempt a second (blocked, but wasted) continuation.
+  waitTimeoutJobId   String?
+  // The inbound Message.id that resumed this run, if resumed by a reply
+  // rather than by timing out. Distinct from steps (a full log) — this is
+  // the one fact "was this specific message already used to resume a run"
+  // that duplicate-delivery handling needs to check quickly.
+  resumedByMessageId String?
+  // context.variables at the moment execution paused — the only place this
+  // needs to be durably persisted, since (unlike the plain `delay` node) a
+  // reply-triggered continuation isn't handed its context via a BullMQ job
+  // payload the way the timeout continuation is.
+  contextVariables   Json      @default("{}")
+
   startedAt DateTime @default(now())
   completedAt DateTime?
 
   @@index([automationId, startedAt])
+  @@index([organizationId, conversationId, status])
+  // Supports QuotaService's monthly-automation-execution-usage count.
+  @@index([organizationId, startedAt])
   @@map("automation_runs")
 }
 
 enum AutomationRunStatus {
   RUNNING
+  WAITING_FOR_REPLY
   COMPLETED
   FAILED
 }

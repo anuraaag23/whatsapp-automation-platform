@@ -37,17 +37,39 @@ export const SCHEDULE_TICK_QUEUE = 'schedule-tick';
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.get<string>('REDIS_HOST') ?? 'localhost',
-          port: config.get<number>('REDIS_PORT') ?? 6379,
-          username: config.get<string>('REDIS_USERNAME') || undefined,
-          password: config.get<string>('REDIS_PASSWORD') || undefined,
-          tls: config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
-          maxRetriesPerRequest: null,
-        },
-        forceDisconnectOnShutdown: true,
-      }),
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('REDIS_URL');
+        let connectionConfig: any;
+        if (redisUrl) {
+          try {
+            const parsed = new URL(redisUrl);
+            connectionConfig = {
+              host: parsed.hostname,
+              port: Number(parsed.port) || 6379,
+              username: parsed.username || undefined,
+              password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+              tls: parsed.protocol === 'rediss:' ? {} : (config.get<string>('REDIS_TLS') === 'true' ? {} : undefined),
+              maxRetriesPerRequest: null,
+            };
+          } catch {
+            // Fall back to individual host/port vars if REDIS_URL is invalid
+          }
+        }
+        if (!connectionConfig) {
+          connectionConfig = {
+            host: config.get<string>('REDIS_HOST') ?? 'localhost',
+            port: config.get<number>('REDIS_PORT') ?? 6379,
+            username: config.get<string>('REDIS_USERNAME') || undefined,
+            password: config.get<string>('REDIS_PASSWORD') || undefined,
+            tls: config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
+            maxRetriesPerRequest: null,
+          };
+        }
+        return {
+          connection: connectionConfig,
+          forceDisconnectOnShutdown: true,
+        };
+      },
     }),
     BullModule.registerQueue({ name: MESSAGE_DISPATCH_QUEUE }),
   ],

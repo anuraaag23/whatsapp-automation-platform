@@ -5,6 +5,7 @@ export type AutomationNodeType =
   | 'send_message'
   | 'ai'
   | 'wait'
+  | 'wait_for_reply'
   | 'branch'
   | 'webhook'
   | 'add_tag'
@@ -35,6 +36,20 @@ export interface AutomationRunContext {
   organizationId: string;
   contactId: string;
   variables: Record<string, string>;
+}
+
+/** Output handles a `wait_for_reply` node's outgoing edges are keyed by — mirrors the true/false handle pattern condition/branch nodes already use. */
+export const WAIT_FOR_REPLY_HANDLE = { REPLY: 'reply', TIMEOUT: 'timeout' } as const;
+export type WaitForReplyHandle = (typeof WAIT_FOR_REPLY_HANDLE)[keyof typeof WAIT_FOR_REPLY_HANDLE];
+
+const DEFAULT_WAIT_FOR_REPLY_TIMEOUT_MINUTES = 60 * 24; // 24h — long enough that most real replies land inside it, short enough that a run doesn't wait forever
+const MIN_WAIT_FOR_REPLY_TIMEOUT_MINUTES = 1;
+
+/** Reads and clamps a `wait_for_reply` node's configured timeout — same "never trust a saved graph's raw numbers" reasoning as the existing delay-node clamp in AutomationEngineService. */
+export function getWaitForReplyTimeoutMinutes(node: AutomationNode): number {
+  const raw = (node.data as { timeoutMinutes?: number } | undefined)?.timeoutMinutes;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return DEFAULT_WAIT_FOR_REPLY_TIMEOUT_MINUTES;
+  return Math.max(raw, MIN_WAIT_FOR_REPLY_TIMEOUT_MINUTES);
 }
 
 /** Evaluates a `condition`/`branch` node's rule against the run context's variables. */

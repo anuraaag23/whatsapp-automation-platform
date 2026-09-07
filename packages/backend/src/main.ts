@@ -10,6 +10,7 @@ async function bootstrap() {
 
   app.use(helmet());
   app.use(cookieParser());
+  app.enableShutdownHooks();
 
   app.enableCors({
     origin: process.env.CORS_ORIGIN?.split(',') ?? 'http://localhost:3000',

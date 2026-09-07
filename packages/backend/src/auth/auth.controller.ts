@@ -94,7 +94,7 @@ export class AuthController {
     // with the live session's values keeps /me consistent with whichever
     // org the current token is actually scoped to.
     const profile = await this.usersService.findProfile(user.userId);
-    return { ...profile, organizationId: user.organizationId, role: user.role };
+    return { ...profile, organizationId: user.organizationId, role: user.role, isSuperAdmin: user.isSuperAdmin };
   }
 
   @Public()

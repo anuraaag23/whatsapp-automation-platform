@@ -12,6 +12,7 @@ import {
 import {
   WEBHOOK_EVENT_PROCESS_QUEUE,
   WEBHOOK_EVENT_RETRY_QUEUE,
+  MESSAGE_RETRY_QUEUE,
 } from '../../src/whatsapp/whatsapp.constants';
 import {
   AUTOMATION_RUN_QUEUE,
@@ -21,6 +22,7 @@ import { MessageDispatchProcessor } from '../../src/schedules/message-dispatch.p
 import { ScheduleTickProcessor } from '../../src/schedules/schedule-tick.processor';
 import { WebhookEventRetryProcessor } from '../../src/whatsapp/webhook-event-retry.processor';
 import { WebhookEventDispatchProcessor } from '../../src/whatsapp/webhook-event-dispatch.processor';
+import { MessageRetryProcessor } from '../../src/whatsapp/message-retry.processor';
 import { AutomationRunProcessor } from '../../src/automations/automation-run.processor';
 import { AutomationScheduleTickProcessor } from '../../src/automations/automation-schedule-tick.processor';
 
@@ -37,6 +39,7 @@ const ALL_PROCESSOR_TOKENS = [
   ScheduleTickProcessor,
   WebhookEventRetryProcessor,
   WebhookEventDispatchProcessor,
+  MessageRetryProcessor,
   AutomationRunProcessor,
   AutomationScheduleTickProcessor,
 ];
@@ -55,6 +58,7 @@ const ALL_QUEUE_NAMES = [
   SCHEDULE_TICK_QUEUE,
   WEBHOOK_EVENT_PROCESS_QUEUE,
   WEBHOOK_EVENT_RETRY_QUEUE,
+  MESSAGE_RETRY_QUEUE,
   AUTOMATION_RUN_QUEUE,
   AUTOMATION_SCHEDULE_TICK_QUEUE,
 ];

@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ContactsService } from '../contacts/contacts.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { MESSAGE_STATUS, MESSAGE_TYPE, MESSAGE_DIRECTION, CONVERSATION_STATUS } from '../common/constants/prisma-enums.constants';
+import { matchConsentKeyword } from './opt-out-keywords';
 
 interface MappedContent {
   type: (typeof MESSAGE_TYPE)[keyof typeof MESSAGE_TYPE];
@@ -128,6 +129,31 @@ export class InboundMessageService {
       },
     });
 
+    // Opt-out/opt-in keyword detection — a compliance requirement, so it
+    // runs unconditionally here (not folded into the best-effort
+    // automation-trigger block below) even though it's still wrapped
+    // defensively: a failure here must not roll back or block the message/
+    // conversation persistence that already committed above. See
+    // opt-out-keywords.ts for why this is an exact-match check, not a
+    // substring/contains match.
+    try {
+      const keywordMatch = matchConsentKeyword(mapped.text);
+      if (keywordMatch) {
+        await this.contactsService.applyInboundConsentKeyword(
+          organizationId,
+          contact.id,
+          keywordMatch.direction,
+          keywordMatch.keyword,
+          message.id,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Consent-keyword handling for inbound message ${message.id} failed; message and conversation remain persisted`,
+        error as Error,
+      );
+    }
+
     // Automation triggering is best-effort from here on: nothing below
     // this point may cause the message/conversation that's already
     // committed above to look lost or failed. If a downstream automation
@@ -167,7 +193,15 @@ export class InboundMessageService {
     if (existing) return existing;
 
     try {
-      const created = await this.contactsService.create(organizationId, { phoneNumber });
+      const created = await this.contactsService.create(
+        organizationId,
+        { phoneNumber },
+        undefined,
+        // enforceQuota: false — see ContactsService.create's doc comment.
+        // An inbound message must be able to create its sender's contact
+        // record regardless of the organization's contact quota.
+        false,
+      );
       return created;
     } catch (error) {
       if (

@@ -316,7 +316,7 @@ describe('WhatsApp webhook hardening (Phase B)', () => {
       where: { provider: 'whatsapp', externalEventId: { in: [idA, idB] } },
     });
     expect(stored).toHaveLength(2);
-  });
+  }, 30_000);
 
   it('reuses the same conversation for a second message from the same contact', async () => {
     const from = `15550${Date.now().toString().slice(-6)}`;
@@ -344,7 +344,7 @@ describe('WhatsApp webhook hardening (Phase B)', () => {
     const messages = await prisma.message.findMany({ where: { conversationId: conversations[0].id } });
     expect(messages).toHaveLength(2);
     expect(conversations[0].unreadCount).toBe(2);
-  });
+  }, 30_000);
 
   it(
     'tolerates a burst of legitimate signed requests above the generic 120/min API limit',

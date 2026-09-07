@@ -9,6 +9,8 @@ import { CreateAutomationDto } from './dto/create-automation.dto';
 import { UpdateAutomationDto } from './dto/update-automation.dto';
 import { validateGraph, AutomationGraph } from './automation-graph';
 import { AutomationEngineService } from './automation-engine.service';
+import { AuditService } from '../audit/audit.service';
+import { QuotaService } from '../quota/quota.service';
 
 export interface ContactCreatedEvent {
   organizationId: string;
@@ -47,6 +49,8 @@ export class AutomationsService {
     private readonly prisma: PrismaService,
     private readonly engine: AutomationEngineService,
     private readonly audienceResolver: AudienceResolverService,
+    private readonly audit: AuditService,
+    private readonly quota: QuotaService,
   ) {}
 
   list(organizationId: string) {
@@ -62,11 +66,20 @@ export class AutomationsService {
     return automation;
   }
 
-  create(organizationId: string, userId: string, dto: CreateAutomationDto) {
+  async create(organizationId: string, userId: string, dto: CreateAutomationDto) {
     const errors = validateGraph(dto.graph as AutomationGraph);
     if (errors.length) throw new BadRequestException(errors.join('; '));
 
-    return this.prisma.automation.create({
+    // Explicit, user-initiated creation of a new automation DEFINITION —
+    // not to be confused with an automation RUN (a single execution),
+    // which is triggered by system events (inbound messages, schedules,
+    // webhooks) and deliberately NOT quota-enforced here; see
+    // quota.service.ts's doc comments and this phase's final report for
+    // why blocking those would risk silently breaking live customer
+    // automations rather than just capping how many an org can define.
+    await this.quota.assertWithinLimit(organizationId, 'automations');
+
+    const automation = await this.prisma.automation.create({
       data: {
         organizationId,
         createdById: userId,
@@ -77,9 +90,20 @@ export class AutomationsService {
         status: AUTOMATION_STATUS.DRAFT,
       },
     });
+
+    this.audit.record({
+      organizationId,
+      userId,
+      action: 'automation.created',
+      entityType: 'Automation',
+      entityId: automation.id,
+      metadata: { name: automation.name, triggerType: automation.triggerType },
+    });
+
+    return automation;
   }
 
-  async update(organizationId: string, id: string, dto: UpdateAutomationDto) {
+  async update(organizationId: string, id: string, dto: UpdateAutomationDto, actorUserId?: string) {
     await this.findOne(organizationId, id);
 
     if (dto.graph) {
@@ -87,23 +111,88 @@ export class AutomationsService {
       if (errors.length) throw new BadRequestException(errors.join('; '));
     }
 
-    return this.prisma.automation.update({
+    const updated = await this.prisma.automation.update({
       where: { id },
       data: {
         ...dto,
         graph: dto.graph ? (dto.graph as unknown as Prisma.InputJsonValue) : undefined,
       },
     });
+
+    this.audit.record({
+      organizationId,
+      userId: actorUserId,
+      action: 'automation.updated',
+      entityType: 'Automation',
+      entityId: id,
+      metadata: { fields: Object.keys(dto) },
+    });
+
+    return updated;
   }
 
-  async setStatus(organizationId: string, id: string, status: AutomationStatus) {
+  async setStatus(organizationId: string, id: string, status: AutomationStatus, actorUserId?: string) {
     await this.findOne(organizationId, id);
-    return this.prisma.automation.update({ where: { id }, data: { status } });
+    const updated = await this.prisma.automation.update({ where: { id }, data: { status } });
+
+    this.audit.record({
+      organizationId,
+      userId: actorUserId,
+      action: 'automation.status_changed',
+      entityType: 'Automation',
+      entityId: id,
+      metadata: { status },
+    });
+
+    return updated;
   }
 
-  async remove(organizationId: string, id: string) {
-    await this.findOne(organizationId, id);
+  /**
+   * Builds the standard variable set every trigger seeds a run's context
+   * with — centralized so `opt_in_status` and a joined `tags` list (what
+   * the brief's condition-node requirement needs, but nothing previously
+   * seeded) land in every trigger path at once, rather than needing the
+   * same two fields added correctly at each of the six call sites
+   * individually. `tags` is a comma-joined name list, not a relation —
+   * evaluateCondition() only ever compares against flat string variables,
+   * so this is the same flattening `last_message` already uses for
+   * message content.
+   */
+  private buildContactVariables(
+    contact: {
+      firstName: string | null;
+      lastName: string | null;
+      company: string | null;
+      city: string | null;
+      optInStatus: string;
+      tags?: { tag: { name: string } }[];
+    },
+    extra?: Record<string, string>,
+  ): Record<string, string> {
+    return {
+      first_name: contact.firstName ?? '',
+      last_name: contact.lastName ?? '',
+      company: contact.company ?? '',
+      city: contact.city ?? '',
+      opt_in_status: contact.optInStatus,
+      tags: (contact.tags ?? []).map((t) => t.tag.name).join(', '),
+      ...extra,
+    };
+  }
+
+  async remove(organizationId: string, id: string, actorUserId?: string) {
+    const automation = await this.findOne(organizationId, id);
     await this.prisma.automation.delete({ where: { id } });
+
+    this.audit.record({
+      organizationId,
+      userId: actorUserId,
+      action: 'automation.deleted',
+      entityType: 'Automation',
+      entityId: id,
+      metadata: { name: automation.name },
+    });
+
     return { success: true };
   }
 
@@ -135,12 +224,16 @@ export class AutomationsService {
     }
 
     let contact = payload.contactId
-      ? await this.prisma.contact.findFirst({ where: { id: payload.contactId, organizationId } })
+      ? await this.prisma.contact.findFirst({
+          where: { id: payload.contactId, organizationId },
+          include: { tags: { include: { tag: true } } },
+        })
       : null;
 
     if (!contact && payload.phoneNumber) {
       contact = await this.prisma.contact.findUnique({
         where: { organizationId_phoneNumber: { organizationId, phoneNumber: payload.phoneNumber } },
+        include: { tags: { include: { tag: true } } },
       });
     }
 
@@ -151,13 +244,7 @@ export class AutomationsService {
     await this.engine.start(automationId, {
       organizationId,
       contactId: contact.id,
-      variables: {
-        first_name: contact.firstName ?? '',
-        last_name: contact.lastName ?? '',
-        company: contact.company ?? '',
-        city: contact.city ?? '',
-        ...payload.variables,
-      },
+      variables: this.buildContactVariables(contact, payload.variables),
     });
 
     return { triggered: true };
@@ -166,18 +253,16 @@ export class AutomationsService {
   /** Manual trigger for testing a MANUAL automation against a specific contact. */
   async runManually(organizationId: string, id: string, contactId: string) {
     const automation = await this.findOne(organizationId, id);
-    const contact = await this.prisma.contact.findFirst({ where: { id: contactId, organizationId } });
+    const contact = await this.prisma.contact.findFirst({
+      where: { id: contactId, organizationId },
+      include: { tags: { include: { tag: true } } },
+    });
     if (!contact) throw new NotFoundException('Contact not found');
 
     await this.engine.start(automation.id, {
       organizationId,
       contactId,
-      variables: {
-        first_name: contact.firstName ?? '',
-        last_name: contact.lastName ?? '',
-        company: contact.company ?? '',
-        city: contact.city ?? '',
-      },
+      variables: this.buildContactVariables(contact),
     });
 
     return { started: true };
@@ -190,13 +275,26 @@ export class AutomationsService {
    * a brand-new sender, created) both as part of persisting the message,
    * so there's no need to re-derive them here, and no scenario where the
    * contact "doesn't exist yet" by the time this listener runs.
+   *
+   * Also the single hook point for wait-for-reply: every inbound message
+   * goes through this same listener (not a second, parallel one), and any
+   * run currently WAITING_FOR_REPLY on this conversation gets resumed
+   * here — independent of, and in addition to, whatever KEYWORD_RECEIVED
+   * automations this same message may separately trigger below.
    */
   @OnEvent('whatsapp.inbound_message')
   async handleInboundMessage(event: WhatsappInboundEvent) {
     const contact = await this.prisma.contact.findFirst({
       where: { id: event.contactId, organizationId: event.organizationId },
+      include: { tags: { include: { tag: true } } },
     });
     if (!contact) return;
+
+    await this.engine
+      .resumeWaitingRepliesForConversation(event.organizationId, event.conversationId, event.messageId, event.text)
+      .catch((error) =>
+        this.logger.error(`Resuming wait-for-reply runs for conversation ${event.conversationId} failed`, error as Error),
+      );
 
     const automations = await this.prisma.automation.findMany({
       where: {
@@ -206,13 +304,7 @@ export class AutomationsService {
       },
     });
 
-    const variables = {
-      first_name: contact.firstName ?? '',
-      last_name: contact.lastName ?? '',
-      company: contact.company ?? '',
-      city: contact.city ?? '',
-      last_message: event.text,
-    };
+    const variables = this.buildContactVariables(contact, { last_message: event.text });
 
     for (const automation of automations) {
       const graph = automation.graph as unknown as AutomationGraph;
@@ -284,7 +376,7 @@ export class AutomationsService {
 
     const recipients = await this.prisma.campaignRecipient.findMany({
       where: { campaignId: event.campaignId },
-      include: { contact: true },
+      include: { contact: { include: { tags: { include: { tag: true } } } } },
     });
 
     for (const automation of automations) {
@@ -292,12 +384,7 @@ export class AutomationsService {
         await this.engine.start(automation.id, {
           organizationId: event.organizationId,
           contactId: recipient.contactId,
-          variables: {
-            first_name: recipient.contact.firstName ?? '',
-            last_name: recipient.contact.lastName ?? '',
-            company: recipient.contact.company ?? '',
-            city: recipient.contact.city ?? '',
-          },
+          variables: this.buildContactVariables(recipient.contact),
         });
       }
       this.logger.log(`Automation "${automation.name}" triggered by campaign.completed for ${recipients.length} contact(s)`);
@@ -346,17 +433,15 @@ export class AutomationsService {
       );
 
       for (const contactId of contactIds) {
-        const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+        const contact = await this.prisma.contact.findUnique({
+          where: { id: contactId },
+          include: { tags: { include: { tag: true } } },
+        });
         if (!contact) continue;
         await this.engine.start(automation.id, {
           organizationId: automation.organizationId,
           contactId,
-          variables: {
-            first_name: contact.firstName ?? '',
-            last_name: contact.lastName ?? '',
-            company: contact.company ?? '',
-            city: contact.city ?? '',
-          },
+          variables: this.buildContactVariables(contact),
         });
         started++;
       }

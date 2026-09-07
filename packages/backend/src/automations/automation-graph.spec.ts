@@ -3,7 +3,9 @@ import {
   findTriggerNode,
   outgoingEdges,
   validateGraph,
+  getWaitForReplyTimeoutMinutes,
   AutomationGraph,
+  AutomationNode,
   AutomationRunContext,
 } from './automation-graph';
 
@@ -76,5 +78,29 @@ describe('graph helpers', () => {
       edges: [...graph.edges, { id: 'bad', source: 'n1', target: 'ghost' }],
     };
     expect(validateGraph(broken).some((e) => e.includes('ghost'))).toBe(true);
+  });
+});
+
+describe('getWaitForReplyTimeoutMinutes', () => {
+  function waitNode(data: Record<string, unknown>): AutomationNode {
+    return { id: 'wait_1', type: 'wait_for_reply', position: { x: 0, y: 0 }, data };
+  }
+
+  it('uses the configured timeoutMinutes when it is a valid positive number', () => {
+    expect(getWaitForReplyTimeoutMinutes(waitNode({ timeoutMinutes: 45 }))).toBe(45);
+  });
+
+  it('defaults to 24 hours when timeoutMinutes is missing', () => {
+    expect(getWaitForReplyTimeoutMinutes(waitNode({}))).toBe(60 * 24);
+  });
+
+  it('defaults to 24 hours for a zero, negative, or non-numeric saved value rather than trusting a malformed graph', () => {
+    expect(getWaitForReplyTimeoutMinutes(waitNode({ timeoutMinutes: 0 }))).toBe(60 * 24);
+    expect(getWaitForReplyTimeoutMinutes(waitNode({ timeoutMinutes: -5 }))).toBe(60 * 24);
+    expect(getWaitForReplyTimeoutMinutes(waitNode({ timeoutMinutes: 'soon' as any }))).toBe(60 * 24);
+  });
+
+  it('clamps below the 1-minute floor up to 1 minute rather than scheduling an effectively-instant timeout', () => {
+    expect(getWaitForReplyTimeoutMinutes(waitNode({ timeoutMinutes: 0.2 }))).toBe(1);
   });
 });

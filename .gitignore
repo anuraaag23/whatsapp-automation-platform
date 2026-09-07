@@ -37,3 +37,7 @@ Thumbs.db
 # Docker volumes data (if ever created locally outside Docker's own volume mgmt)
 postgres_data/
 redis_data/
+
+# Local/generated files
+*.tsbuildinfo
+.claude/

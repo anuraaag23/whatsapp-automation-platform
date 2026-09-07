@@ -7,6 +7,7 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { SuperAdminGuard } from '../common/guards/super-admin.guard';
 import { UsersModule } from '../users/users.module';
 import { TransactionalEmailService } from './transactional-email.service';
 import { EmailSenderService } from '../notifications/senders/email-sender.service';
@@ -25,6 +26,7 @@ import { EmailSenderService } from '../notifications/senders/email-sender.servic
     EmailSenderService,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: SuperAdminGuard },
   ],
   exports: [AuthService],
 })

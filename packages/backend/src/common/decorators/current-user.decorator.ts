@@ -5,6 +5,7 @@ export interface AuthenticatedUser {
   email: string;
   role: string;
   organizationId: string;
+  isSuperAdmin: boolean;
 }
 
 export const CurrentUser = createParamDecorator(

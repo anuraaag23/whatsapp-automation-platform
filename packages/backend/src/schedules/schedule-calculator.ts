@@ -55,7 +55,7 @@ function parseHHMM(value: string): { hours: number; minutes: number } {
 // (EVERY_X_DAYS, and the random-time window).
 // ---------------------------------------------------------------------------
 
-interface ZonedParts {
+export interface ZonedParts {
   year: number;
   month: number; // 1-12
   day: number;
@@ -78,7 +78,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 /** Reads the wall-clock date/time that `date` (a UTC instant) corresponds to in `timeZone`. */
-function getZonedParts(date: Date, timeZone: string): ZonedParts {
+export function getZonedParts(date: Date, timeZone: string): ZonedParts {
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
@@ -118,7 +118,7 @@ function getZonedParts(date: Date, timeZone: string): ZonedParts {
  * (rare) cases right at a DST boundary; three iterations is a safety
  * margin, not a requirement.
  */
-function zonedTimeToUtc(
+export function zonedTimeToUtc(
   year: number,
   month: number,
   day: number,

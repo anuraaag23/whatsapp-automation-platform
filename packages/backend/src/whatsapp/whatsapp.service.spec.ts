@@ -4,6 +4,8 @@ import { WhatsappClient } from './whatsapp.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto/crypto.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ConversationsService } from '../conversations/conversations.service';
+import { QuotaService, QuotaExceededException } from '../quota/quota.service';
 
 /**
  * Standing in for the real Message table: applyStatusUpdate's only query is
@@ -23,7 +25,11 @@ function createPrismaMock() {
   return {
     message: {
       findFirst: jest.fn(async ({ where }: any) => {
-        return [...messages.values()].find((m) => m.waMessageId === where.waMessageId) ?? null;
+        return (
+          [...messages.values()].find((m) =>
+            Object.entries(where).every(([key, value]) => m[key] === value),
+          ) ?? null
+        );
       }),
       create: jest.fn(async ({ data }: any) => {
         const id = `msg_${messages.size + 1}`;
@@ -33,7 +39,16 @@ function createPrismaMock() {
       }),
       update: jest.fn(async ({ where, data }: any) => {
         const existing = messages.get(where.id);
-        const updated = { ...existing, ...data };
+        // Minimal support for Prisma's `{ increment: n }` update operator —
+        // enough for retryCount without pulling in a full Prisma mock lib.
+        const resolved: Record<string, any> = {};
+        for (const [key, value] of Object.entries(data)) {
+          resolved[key] =
+            value && typeof value === 'object' && 'increment' in (value as any)
+              ? (existing?.[key] ?? 0) + (value as any).increment
+              : value;
+        }
+        const updated = { ...existing, ...resolved };
         messages.set(where.id, updated);
         return updated;
       }),
@@ -50,10 +65,18 @@ function createPrismaMock() {
     whatsappAccount: {
       findUnique: jest.fn(async ({ where }: any) => accounts.get(where.organizationId) ?? null),
     },
+    conversation: {
+      update: jest.fn(async ({ where, data }: any) => ({ id: where.id, ...data })),
+    },
     __messages: messages,
     __contacts: contacts,
     __accounts: accounts,
   };
+}
+
+/** ConversationsService is mocked directly (rather than exercised for real) here — sendToContact's own tests care about the send path, not conversation upsert semantics, which are covered separately in conversations.service.spec.ts. */
+function createConversationsServiceMock() {
+  return { findOrCreateForContact: jest.fn(async (_organizationId: string, contactId: string) => ({ id: `conv_${contactId}` })) };
 }
 
 describe('WhatsappService.applyStatusUpdate', () => {
@@ -72,6 +95,8 @@ describe('WhatsappService.applyStatusUpdate', () => {
         { provide: WhatsappClient, useValue: {} },
         { provide: CryptoService, useValue: {} },
         { provide: NotificationsService, useValue: { notify: jest.fn() } },
+        { provide: ConversationsService, useValue: createConversationsServiceMock() },
+        { provide: QuotaService, useValue: { assertWithinLimit: jest.fn() } },
       ],
     }).compile();
 
@@ -102,8 +127,8 @@ describe('WhatsappService.sendToContact — tenant isolation', () => {
 
   beforeEach(async () => {
     prismaMock = createPrismaMock();
-    prismaMock.__contacts.set('contact_org_a', { id: 'contact_org_a', organizationId: 'org_a', phoneNumber: '15550001111' });
-    prismaMock.__contacts.set('contact_org_b', { id: 'contact_org_b', organizationId: 'org_b', phoneNumber: '15550002222' });
+    prismaMock.__contacts.set('contact_org_a', { id: 'contact_org_a', organizationId: 'org_a', phoneNumber: '15550001111', optInStatus: 'OPTED_IN' });
+    prismaMock.__contacts.set('contact_org_b', { id: 'contact_org_b', organizationId: 'org_b', phoneNumber: '15550002222', optInStatus: 'OPTED_IN' });
     prismaMock.__accounts.set('org_a', { organizationId: 'org_a', phoneNumberId: 'phone_a', accessTokenCiphertext: 'enc' });
 
     clientMock = { sendText: jest.fn(async () => ({ success: true, waMessageId: 'wamid.sent' })) };
@@ -115,6 +140,8 @@ describe('WhatsappService.sendToContact — tenant isolation', () => {
         { provide: WhatsappClient, useValue: clientMock },
         { provide: CryptoService, useValue: { decrypt: () => 'plaintext-token' } },
         { provide: NotificationsService, useValue: { notify: jest.fn() } },
+        { provide: ConversationsService, useValue: createConversationsServiceMock() },
+        { provide: QuotaService, useValue: { assertWithinLimit: jest.fn() } },
       ],
     }).compile();
 
@@ -133,6 +160,38 @@ describe('WhatsappService.sendToContact — tenant isolation', () => {
       expect.objectContaining({ to: '15550001111', phoneNumberId: 'phone_a' }),
     );
     expect(result.status).toBe('SENT');
+  });
+
+  it('links the sent message to the contact\'s conversation and marks it as the latest outbound activity', async () => {
+    const conversationsMock = createConversationsServiceMock();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        WhatsappService,
+        { provide: PrismaService, useValue: prismaMock },
+        { provide: WhatsappClient, useValue: clientMock },
+        { provide: CryptoService, useValue: { decrypt: () => 'plaintext-token' } },
+        { provide: NotificationsService, useValue: { notify: jest.fn() } },
+        { provide: ConversationsService, useValue: conversationsMock },
+        { provide: QuotaService, useValue: { assertWithinLimit: jest.fn() } },
+      ],
+    }).compile();
+    const localService = moduleRef.get(WhatsappService);
+
+    const result = await localService.sendToContact({
+      organizationId: 'org_a',
+      contactId: 'contact_org_a',
+      type: 'TEXT' as any,
+      content: { body: 'hi' },
+    });
+
+    expect(conversationsMock.findOrCreateForContact).toHaveBeenCalledWith('org_a', 'contact_org_a');
+    expect((result as any).conversationId).toBe('conv_contact_org_a');
+    expect(prismaMock.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'conv_contact_org_a' },
+        data: expect.objectContaining({ lastMessageAt: expect.any(Date), lastOutboundAt: expect.any(Date) }),
+      }),
+    );
   });
 
   it('refuses to send when contactId belongs to a DIFFERENT organization than the requester', async () => {
@@ -163,5 +222,152 @@ describe('WhatsappService.sendToContact — tenant isolation', () => {
     expect(prismaMock.contact.findFirst).toHaveBeenCalledWith({
       where: { id: 'contact_org_a', organizationId: 'org_a' },
     });
+  });
+});
+
+describe('WhatsappService.sendToContact — opt-out enforcement (single central check)', () => {
+  let service: WhatsappService;
+  let prismaMock: ReturnType<typeof createPrismaMock>;
+  let clientMock: { sendText: jest.Mock };
+
+  beforeEach(async () => {
+    prismaMock = createPrismaMock();
+    prismaMock.__accounts.set('org_a', { organizationId: 'org_a', phoneNumberId: 'phone_a', accessTokenCiphertext: 'enc' });
+    clientMock = { sendText: jest.fn(async () => ({ success: true, waMessageId: 'wamid.sent' })) };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        WhatsappService,
+        { provide: PrismaService, useValue: prismaMock },
+        { provide: WhatsappClient, useValue: clientMock },
+        { provide: CryptoService, useValue: { decrypt: () => 'plaintext-token' } },
+        { provide: NotificationsService, useValue: { notify: jest.fn() } },
+        { provide: ConversationsService, useValue: createConversationsServiceMock() },
+        { provide: QuotaService, useValue: { assertWithinLimit: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get(WhatsappService);
+  });
+
+  it.each(['PENDING', 'OPTED_OUT'])('refuses to call the WhatsApp API for a contact with optInStatus %s, and records a FAILED message instead', async (optInStatus) => {
+    prismaMock.__contacts.set('contact_1', { id: 'contact_1', organizationId: 'org_a', phoneNumber: '15550001111', optInStatus });
+
+    const result = await service.sendToContact({
+      organizationId: 'org_a',
+      contactId: 'contact_1',
+      type: 'TEXT' as any,
+      content: { body: 'hi' },
+    });
+
+    expect(clientMock.sendText).not.toHaveBeenCalled();
+    expect((result as any).status).toBe('FAILED');
+    expect((result as any).errorCode).toBe('NOT_OPTED_IN');
+  });
+
+  it('sends normally for an OPTED_IN contact — this is the one enforcement point every send path relies on', async () => {
+    prismaMock.__contacts.set('contact_1', { id: 'contact_1', organizationId: 'org_a', phoneNumber: '15550001111', optInStatus: 'OPTED_IN' });
+
+    const result = await service.sendToContact({
+      organizationId: 'org_a',
+      contactId: 'contact_1',
+      type: 'TEXT' as any,
+      content: { body: 'hi' },
+    });
+
+    expect(clientMock.sendText).toHaveBeenCalled();
+    expect((result as any).status).toBe('SENT');
+  });
+});
+
+describe('WhatsappService.retrySend', () => {
+  let service: WhatsappService;
+  let prismaMock: ReturnType<typeof createPrismaMock>;
+  let clientMock: { sendText: jest.Mock };
+  let quotaMock: { assertWithinLimit: jest.Mock };
+
+  beforeEach(async () => {
+    prismaMock = createPrismaMock();
+    prismaMock.__accounts.set('org_a', { organizationId: 'org_a', phoneNumberId: 'phone_a', accessTokenCiphertext: 'enc' });
+    prismaMock.__contacts.set('contact_1', { id: 'contact_1', organizationId: 'org_a', phoneNumber: '15550001111', optInStatus: 'OPTED_IN' });
+    prismaMock.__messages.set('msg_failed', {
+      id: 'msg_failed',
+      organizationId: 'org_a',
+      contactId: 'contact_1',
+      conversationId: 'conv_contact_1',
+      direction: 'OUTBOUND',
+      type: 'TEXT',
+      content: { body: 'hi again' },
+      status: 'FAILED',
+      retryCount: 0,
+    });
+
+    clientMock = { sendText: jest.fn(async () => ({ success: true, waMessageId: 'wamid.retry-sent' })) };
+    quotaMock = { assertWithinLimit: jest.fn().mockResolvedValue(undefined) };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        WhatsappService,
+        { provide: PrismaService, useValue: prismaMock },
+        { provide: WhatsappClient, useValue: clientMock },
+        { provide: CryptoService, useValue: { decrypt: () => 'plaintext-token' } },
+        { provide: NotificationsService, useValue: { notify: jest.fn() } },
+        { provide: ConversationsService, useValue: createConversationsServiceMock() },
+        { provide: QuotaService, useValue: quotaMock },
+      ],
+    }).compile();
+    service = moduleRef.get(WhatsappService);
+  });
+
+  it('enforces monthly message quota before dispatch — finalizes retry as FAILED with QUOTA_EXCEEDED without calling provider', async () => {
+    quotaMock.assertWithinLimit.mockRejectedValue(
+      new QuotaExceededException('messagesPerMonth', 100, 100),
+    );
+
+    const result = await service.retrySend('org_a', 'msg_failed');
+
+    expect(quotaMock.assertWithinLimit).toHaveBeenCalledWith('org_a', 'messagesPerMonth');
+    expect(clientMock.sendText).not.toHaveBeenCalled();
+    expect((result as any).status).toBe('FAILED');
+    expect((result as any).retryCount).toBe(1);
+    expect((result as any).errorCode).toBe('QUOTA_EXCEEDED');
+    expect((result as any).errorMessage).toContain('messagesPerMonth');
+  });
+
+  it('re-sends using the SAME message row (updates it) rather than creating a new one', async () => {
+    const before = prismaMock.__messages.size;
+    const result = await service.retrySend('org_a', 'msg_failed');
+
+    expect(clientMock.sendText).toHaveBeenCalledWith(expect.objectContaining({ to: '15550001111', body: 'hi again' }));
+    expect(prismaMock.__messages.size).toBe(before);
+    expect((result as any).id).toBe('msg_failed');
+    expect((result as any).status).toBe('SENT');
+    expect((result as any).waMessageId).toBe('wamid.retry-sent');
+  });
+
+  it('increments retryCount and stays FAILED when the resend also fails', async () => {
+    clientMock.sendText.mockResolvedValueOnce({ success: false, errorCode: '131026', errorMessage: 'undeliverable' });
+
+    const result = await service.retrySend('org_a', 'msg_failed');
+
+    expect((result as any).status).toBe('FAILED');
+    expect((result as any).retryCount).toBe(1);
+    expect((result as any).errorCode).toBe('131026');
+  });
+
+  it('re-verifies opt-in status at retry time — a contact who opted out since the original attempt is not messaged', async () => {
+    prismaMock.__contacts.set('contact_1', { id: 'contact_1', organizationId: 'org_a', phoneNumber: '15550001111', optInStatus: 'OPTED_OUT' });
+
+    const result = await service.retrySend('org_a', 'msg_failed');
+
+    expect(clientMock.sendText).not.toHaveBeenCalled();
+    expect((result as any).status).toBe('FAILED');
+    expect((result as any).errorCode).toBe('NOT_OPTED_IN');
+  });
+
+  it('throws NotFoundException for a message that is not FAILED (nothing to retry) or not in this organization', async () => {
+    prismaMock.__messages.set('msg_sent', { id: 'msg_sent', organizationId: 'org_a', contactId: 'contact_1', direction: 'OUTBOUND', status: 'SENT' });
+
+    await expect(service.retrySend('org_a', 'msg_sent')).rejects.toThrow('Failed outbound message not found');
+    await expect(service.retrySend('org_b', 'msg_failed')).rejects.toThrow('Failed outbound message not found');
   });
 });

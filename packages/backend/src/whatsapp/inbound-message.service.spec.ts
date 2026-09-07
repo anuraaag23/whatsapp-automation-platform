@@ -69,7 +69,7 @@ function createPrismaMock() {
 describe('InboundMessageService', () => {
   let service: InboundMessageService;
   let prismaMock: ReturnType<typeof createPrismaMock>;
-  let contactsServiceMock: { create: jest.Mock };
+  let contactsServiceMock: { create: jest.Mock; applyInboundConsentKeyword: jest.Mock };
   let conversationsServiceMock: { findOrCreateForContact: jest.Mock };
   let events: EventEmitter2;
 
@@ -85,6 +85,7 @@ describe('InboundMessageService', () => {
         prismaMock.__contacts.set(contact.id, contact);
         return contact;
       }),
+      applyInboundConsentKeyword: jest.fn(),
     };
 
     conversationsServiceMock = {
@@ -138,7 +139,7 @@ describe('InboundMessageService', () => {
   it('creates a new contact via ContactsService (not a second implementation) for a first-time sender', async () => {
     await service.handle(textPayload());
 
-    expect(contactsServiceMock.create).toHaveBeenCalledWith(ORG_ID, { phoneNumber: '15550001111' });
+    expect(contactsServiceMock.create).toHaveBeenCalledWith(ORG_ID, { phoneNumber: '15550001111' }, undefined, false);
   });
 
   it('reuses an existing contact instead of creating a duplicate', async () => {
@@ -302,5 +303,40 @@ describe('InboundMessageService', () => {
 
     await expect(service.handle(textPayload())).resolves.toBeUndefined();
     expect(prismaMock.message.create).toHaveBeenCalled();
+  });
+
+  describe('opt-out/opt-in keyword detection', () => {
+    it('calls ContactsService.applyInboundConsentKeyword with the matched direction/keyword/messageId for an exact-match "stop"', async () => {
+      await service.handle(textPayload({ text: { body: 'STOP' } }));
+
+      expect(contactsServiceMock.applyInboundConsentKeyword).toHaveBeenCalledWith(
+        ORG_ID,
+        'contact_15550001111',
+        'OPT_OUT',
+        'stop',
+        expect.any(String),
+      );
+    });
+
+    it('does NOT call applyInboundConsentKeyword for an ordinary message that merely contains a keyword-like word', async () => {
+      await service.handle(textPayload({ text: { body: 'please stop texting me so much' } }));
+      expect(contactsServiceMock.applyInboundConsentKeyword).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call applyInboundConsentKeyword for a normal, non-matching message', async () => {
+      await service.handle(textPayload({ text: { body: 'hello there' } }));
+      expect(contactsServiceMock.applyInboundConsentKeyword).not.toHaveBeenCalled();
+    });
+
+    it('keeps the message/conversation persisted and still emits the automation event even if consent-keyword handling throws', async () => {
+      contactsServiceMock.applyInboundConsentKeyword.mockRejectedValueOnce(new Error('boom'));
+      const listener = jest.fn();
+      events.on('whatsapp.inbound_message', listener);
+
+      await expect(service.handle(textPayload({ text: { body: 'STOP' } }))).resolves.toBeUndefined();
+
+      expect(prismaMock.message.create).toHaveBeenCalled();
+      expect(listener).toHaveBeenCalled();
+    });
   });
 });

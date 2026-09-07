@@ -12,6 +12,9 @@ import { QueueModule } from '../queue/queue.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { AiModule } from '../ai/ai.module';
 import { ContactsModule } from '../contacts/contacts.module';
+import { ConversationsModule } from '../conversations/conversations.module';
+import { AuditModule } from '../audit/audit.module';
+import { QuotaModule } from '../quota/quota.module';
 
 @Module({
   imports: [
@@ -20,6 +23,14 @@ import { ContactsModule } from '../contacts/contacts.module';
     WhatsappModule,
     AiModule,
     ContactsModule,
+    // WhatsappModule only exports WhatsappService/WhatsappClient (not
+    // ConversationsService, even though it imports ConversationsModule
+    // itself for its own use) — needed directly here so
+    // AutomationEngineService can resolve the conversation a
+    // `wait_for_reply` node should watch.
+    ConversationsModule,
+    AuditModule,
+    QuotaModule,
   ],
   controllers: [AutomationsController, AutomationWebhookController],
   providers: [

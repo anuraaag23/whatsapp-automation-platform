@@ -1,14 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { MESSAGE_TYPE } from '../common/constants/prisma-enums.constants';
+import type { MessageType } from '@prisma/client';
+import { MESSAGE_TYPE, MESSAGE_STATUS } from '../common/constants/prisma-enums.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { AiService } from '../ai/ai.service';
+import { ConversationsService } from '../conversations/conversations.service';
+import { AuditService } from '../audit/audit.service';
 import {
   AutomationGraph,
   AutomationNode,
   AutomationRunContext,
+  WaitForReplyHandle,
+  WAIT_FOR_REPLY_HANDLE,
+  getWaitForReplyTimeoutMinutes,
   evaluateCondition,
   findNode,
   findTriggerNode,
@@ -33,6 +39,8 @@ export class AutomationEngineService {
     private readonly prisma: PrismaService,
     private readonly whatsappService: WhatsappService,
     private readonly aiService: AiService,
+    private readonly conversations: ConversationsService,
+    private readonly audit: AuditService,
     @InjectQueue(AUTOMATION_RUN_QUEUE) private readonly runQueue: Queue,
   ) {
     // See WebhookEventProcessorService's constructor for why this listener
@@ -87,6 +95,11 @@ export class AutomationEngineService {
         if (!node) {
           await this.finishRun(runId, stepLog, 'COMPLETED');
           return;
+        }
+
+        if (node.type === 'wait_for_reply') {
+          await this.pauseForReply(automationId, node, context, runId, stepLog);
+          return; // execution resumes via resumeWaitingRepliesForConversation() or resumeTimedOutRun()
         }
 
         if (node.type === 'delay' || node.type === 'wait') {
@@ -152,6 +165,179 @@ export class AutomationEngineService {
     });
   }
 
+  /**
+   * Parks a run at a `wait_for_reply` node: persists everything needed to
+   * resume it later — which conversation to watch, which node to resume
+   * from, the run's variables at this point (not carried via a queued
+   * job's payload the way `delay` resumption is, since a reply resumes
+   * this from an inbound-message event, not from picking the job back up)
+   * — and schedules a timeout continuation as a delayed job on the same
+   * queue `delay` nodes already use, so it survives a process restart the
+   * same way those do.
+   */
+  private async pauseForReply(
+    automationId: string,
+    node: AutomationNode,
+    context: AutomationRunContext,
+    runId: string,
+    stepLog: RunStep[],
+  ) {
+    // The 1:1 (organizationId, contactId) Conversation is the match key an
+    // inbound reply is looked up by — resolved (or, for a contact with no
+    // prior thread, created) here rather than requiring every trigger call
+    // site to have already threaded a conversationId through
+    // AutomationRunContext just for this one node type.
+    const conversation = await this.conversations.findOrCreateForContact(context.organizationId, context.contactId);
+    const timeoutMinutes = getWaitForReplyTimeoutMinutes(node);
+    const timeoutMs = timeoutMinutes * 60_000;
+
+    stepLog.push({ nodeId: node.id, nodeType: node.type, at: new Date().toISOString(), outcome: 'waiting' });
+
+    const job = await this.runQueue.add('wait-timeout', { runId }, { delay: timeoutMs });
+
+    await this.prisma.automationRun.update({
+      where: { id: runId },
+      data: {
+        status: 'WAITING_FOR_REPLY',
+        steps: stepLog as any,
+        conversationId: conversation.id,
+        waitingNodeId: node.id,
+        waitingSince: new Date(),
+        waitExpiresAt: new Date(Date.now() + timeoutMs),
+        waitTimeoutJobId: job.id ?? null,
+        contextVariables: context.variables as any,
+      },
+    });
+
+    this.audit.record({
+      organizationId: context.organizationId,
+      action: 'automation.paused_for_reply',
+      entityType: 'AutomationRun',
+      entityId: runId,
+      metadata: { automationId, nodeId: node.id, timeoutMinutes, conversationId: conversation.id },
+    });
+  }
+
+  /**
+   * Entry point for InboundMessageService's `whatsapp.inbound_message`
+   * listener (see AutomationsService.handleInboundMessage) — the same
+   * event every other trigger type reacts to, not a parallel notification
+   * path. Every run currently waiting on this conversation is resumed
+   * independently: two different automations both waiting on the same
+   * contact both legitimately treat the next message as "the reply".
+   */
+  async resumeWaitingRepliesForConversation(
+    organizationId: string,
+    conversationId: string,
+    messageId: string,
+    replyText: string,
+  ) {
+    const waitingRuns = await this.prisma.automationRun.findMany({
+      where: { organizationId, conversationId, status: 'WAITING_FOR_REPLY' },
+      select: { id: true },
+    });
+
+    for (const run of waitingRuns) {
+      await this.continueWaitingRun(run.id, WAIT_FOR_REPLY_HANDLE.REPLY, { messageId, replyText });
+    }
+  }
+
+  /** Called by AutomationRunProcessor for a 'wait-timeout' job once its delay elapses. */
+  async resumeTimedOutRun(runId: string) {
+    await this.continueWaitingRun(runId, WAIT_FOR_REPLY_HANDLE.TIMEOUT, {});
+  }
+
+  /**
+   * The one place a waiting run is actually resumed, whichever of the two
+   * ways (reply arriving, or timing out) got there first. The conditional
+   * `updateMany` is the concurrency guard the whole feature depends on: it
+   * only succeeds if the run is still WAITING_FOR_REPLY, so if a reply and
+   * the timeout job both fire around the same moment — or the same inbound
+   * message somehow triggers this twice — only the first to land actually
+   * continues the run. Everyone else sees `count === 0` and no-ops.
+   */
+  private async continueWaitingRun(
+    runId: string,
+    handle: WaitForReplyHandle,
+    opts: { messageId?: string; replyText?: string },
+  ) {
+    const claimed = await this.prisma.automationRun.updateMany({
+      where: { id: runId, status: 'WAITING_FOR_REPLY' },
+      data: {
+        status: 'RUNNING',
+        ...(handle === WAIT_FOR_REPLY_HANDLE.REPLY && opts.messageId ? { resumedByMessageId: opts.messageId } : {}),
+      },
+    });
+    if (claimed.count === 0) {
+      this.logger.log(`AutomationRun ${runId} is no longer WAITING_FOR_REPLY — skipping duplicate continuation (handle=${handle})`);
+      return;
+    }
+
+    const run = await this.prisma.automationRun.findUnique({ where: { id: runId } });
+    const stepLog = await this.loadSteps(runId);
+
+    if (!run || !run.waitingNodeId || !run.automationId) {
+      this.logger.warn(`AutomationRun ${runId} was claimed for continuation but is missing its waiting-node state`);
+      await this.finishRun(runId, stepLog, 'FAILED', 'Waiting run had no recorded waiting node to resume from');
+      return;
+    }
+
+    const automation = await this.prisma.automation.findUnique({ where: { id: run.automationId } });
+    if (!automation || automation.status !== 'ACTIVE') {
+      await this.finishRun(runId, stepLog, 'COMPLETED');
+      return;
+    }
+
+    // A reply beat the timeout to it — cancel the now-redundant timeout
+    // job so it doesn't sit in the queue until it eventually fires (the
+    // updateMany guard above means it would be harmless if it did, but
+    // there's no reason to leave it there).
+    if (handle === WAIT_FOR_REPLY_HANDLE.REPLY && run.waitTimeoutJobId) {
+      try {
+        const pendingJob = await this.runQueue.getJob(run.waitTimeoutJobId);
+        await pendingJob?.remove();
+      } catch (error) {
+        this.logger.warn(`Could not remove timeout job ${run.waitTimeoutJobId} for run ${runId}: ${(error as Error).message}`);
+      }
+    }
+
+    const graph = automation.graph as unknown as AutomationGraph;
+    const node = findNode(graph, run.waitingNodeId);
+    stepLog.push({ nodeId: run.waitingNodeId, nodeType: 'wait_for_reply', at: new Date().toISOString(), outcome: handle });
+
+    this.audit.record({
+      organizationId: run.organizationId,
+      action: handle === WAIT_FOR_REPLY_HANDLE.REPLY ? 'automation.resumed_by_reply' : 'automation.wait_timed_out',
+      entityType: 'AutomationRun',
+      entityId: runId,
+      metadata: { automationId: run.automationId, nodeId: run.waitingNodeId, messageId: opts.messageId },
+    });
+
+    if (!node) {
+      await this.finishRun(runId, stepLog, 'COMPLETED');
+      return;
+    }
+
+    const edges = outgoingEdges(graph, node.id, handle);
+    if (edges.length === 0) {
+      await this.persistSteps(runId, stepLog);
+      await this.finishRun(runId, stepLog, 'COMPLETED');
+      return;
+    }
+
+    const context: AutomationRunContext = {
+      organizationId: run.organizationId,
+      contactId: run.contactId,
+      variables: {
+        ...((run.contextVariables as unknown as Record<string, string> | null) ?? {}),
+        ...(handle === WAIT_FOR_REPLY_HANDLE.REPLY && opts.replyText !== undefined ? { last_message: opts.replyText } : {}),
+      },
+    };
+
+    await this.persistSteps(runId, stepLog);
+    await this.executeFrom(run.automationId, graph, edges[0].target, context, runId);
+  }
+
   private async executeNode(
     automationId: string,
     node: AutomationNode,
@@ -171,12 +357,50 @@ export class AutomationEngineService {
         const data = node.data as { body?: string; templateId?: string };
         const rendered = data.body ? this.renderVariables(data.body, context.variables) : undefined;
 
-        await this.whatsappService.sendToContact({
+        // Same template-lookup pattern as MessageDispatchProcessor (see
+        // its process() method) — WhatsappService.sendToContact expects
+        // TEMPLATE content shaped as { name, language }, not a bare
+        // templateId, so this has to resolve the actual MessageTemplate
+        // row first rather than passing the id straight through.
+        let type: MessageType = MESSAGE_TYPE.TEXT;
+        let content: Record<string, unknown> = { body: rendered ?? '' };
+        if (data.templateId) {
+          const template = await this.prisma.messageTemplate.findFirst({
+            where: { id: data.templateId, organizationId: context.organizationId },
+          });
+          if (template) {
+            type = MESSAGE_TYPE.TEMPLATE;
+            content = { name: template.name, language: template.language };
+          } else {
+            this.logger.warn(
+              `Automation ${automationId}: templateId ${data.templateId} not found in org ${context.organizationId}; falling back to plain text body`,
+            );
+          }
+        }
+
+        // WhatsappService.sendToContact is the single centralized
+        // enforcement point for opt-out (see its docstring) — an
+        // automation with no send_message-specific opt-out check of its
+        // own still can't message an opted-out contact. This just makes
+        // that outcome visible in the audit log rather than silently
+        // doing nothing, since an automation skipping a step has no other
+        // trace in the UI the way a failed ad hoc send or campaign
+        // recipient does.
+        const message = await this.whatsappService.sendToContact({
           organizationId: context.organizationId,
           contactId: context.contactId,
-          type: data.templateId ? MESSAGE_TYPE.TEMPLATE : MESSAGE_TYPE.TEXT,
-          content: data.templateId ? { templateId: data.templateId } : { body: rendered ?? '' },
+          type,
+          content,
         });
+        if (message.status === MESSAGE_STATUS.FAILED && message.errorCode === 'NOT_OPTED_IN') {
+          this.audit.record({
+            organizationId: context.organizationId,
+            action: 'automation.send_blocked_optout',
+            entityType: 'Contact',
+            entityId: context.contactId,
+            metadata: { automationId },
+          });
+        }
         return {};
       }
 
@@ -213,7 +437,7 @@ export class AutomationEngineService {
               create: { contactId: context.contactId, tagId: data.tagId },
               update: {},
             })
-            .catch((error) => this.logger.warn(`Automation add-tag step failed: ${(error as Error).message}`));
+            .catch((error: unknown) => this.logger.warn(`Automation add-tag step failed: ${(error as Error).message}`));
         }
         return {};
       }
@@ -227,7 +451,7 @@ export class AutomationEngineService {
               create: { contactId: context.contactId, groupId: data.groupId },
               update: {},
             })
-            .catch((error) => this.logger.warn(`Automation add-to-group step failed: ${(error as Error).message}`));
+            .catch((error: unknown) => this.logger.warn(`Automation add-to-group step failed: ${(error as Error).message}`));
         }
         return {};
       }
@@ -243,7 +467,7 @@ export class AutomationEngineService {
           const rendered = data.value ? this.renderVariables(data.value, context.variables) : '';
           await this.prisma.contact
             .update({ where: { id: context.contactId }, data: { [data.field]: rendered } })
-            .catch((error) => this.logger.warn(`Automation update-contact step failed: ${(error as Error).message}`));
+            .catch((error: unknown) => this.logger.warn(`Automation update-contact step failed: ${(error as Error).message}`));
         }
         return {};
       }

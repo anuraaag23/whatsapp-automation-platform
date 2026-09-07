@@ -11,7 +11,7 @@ services:
     # need host access for a GUI client, SSH-tunnel in instead of opening
     # this to 0.0.0.0.
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

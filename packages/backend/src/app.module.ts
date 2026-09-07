@@ -27,6 +27,8 @@ import { AutomationsModule } from './automations/automations.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
+import { SuperAdminModule } from './super-admin/super-admin.module';
+import { QuotaModule } from './quota/quota.module';
 
 @Module({
   imports: [
@@ -57,6 +59,8 @@ import { AuditModule } from './audit/audit.module';
     OrganizationsModule,
     HealthModule,
     AuditModule,
+    SuperAdminModule,
+    QuotaModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
