@@ -71,4 +71,29 @@ describe('WhatsappSignatureGuard', () => {
 
     expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
   });
+
+  it('rejects a malformed signature that lacks the sha256= prefix', () => {
+    const body = Buffer.from(JSON.stringify({ entry: [] }));
+    const rawSignature = sign(body).replace('sha256=', '');
+    const context = createContext({ 'x-hub-signature-256': rawSignature }, body);
+
+    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+  });
+
+  it('rejects a malformed signature with invalid length', () => {
+    const body = Buffer.from(JSON.stringify({ entry: [] }));
+    const context = createContext({ 'x-hub-signature-256': 'sha256=short' }, body);
+
+    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+  });
+
+  it('rejects when body is tampered after signature calculation', () => {
+    const originalBody = Buffer.from(JSON.stringify({ entry: [{ id: 'original' }] }));
+    const tamperedBody = Buffer.from(JSON.stringify({ entry: [{ id: 'tampered' }] }));
+    const validSignatureForOriginal = sign(originalBody);
+
+    const context = createContext({ 'x-hub-signature-256': validSignatureForOriginal }, tamperedBody);
+
+    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+  });
 });
